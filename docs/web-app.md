@@ -104,14 +104,15 @@ Primary operator screen for setting up and launching print runs.
 - "New Project" inline form: name + optional description → `POST /api/projects`
 
 **Detail view:**
-- Header with project name, status badge, and context-sensitive action button:
+- Header with project name (click ✎ to rename inline → `PUT /api/projects/:id { name }`), status badge, and context-sensitive action button:
   - `draft` → "Activate" → `PUT /api/projects/:id { status: 'active' }` + `POST /api/scheduler/dispatch`
   - `active` → "Pause" → `PUT /api/projects/:id { status: 'paused' }`
   - `paused` → "Resume" → same as Activate
   - `completed` → no button
 - **Parts list:** each row is read-only — name (with ▲/▼ priority buttons), progress bar (`completed_qty / target_qty`), status badge, G-code model chips (read-only). All editing is behind the Details button.
 - **▲/▼ ordering buttons:** move a part up or down in dispatch priority. Updates `sort_order` via `PUT /api/parts/reorder`. Optimistic — local state reorders immediately.
-- **Details panel** (per part, toggle with "Details" button): three sections:
+- **Details panel** (per part, toggle with "Details" button): four sections:
+  - *Part Name* — current name displayed with a ✎ pencil button. Click to edit inline; Enter or blur saves, Escape cancels → `PUT /api/parts/:id { name }`
   - *Quantities* — editable Have (completed_qty) and Need (target_qty) fields, single Save button. Confirm dialogs guard open↔closed transitions. Server auto-calculates status.
   - *G-code Files* — lists each uploaded file with filename, printer model badge, and × delete button (with confirm) → `DELETE /api/gcodes/:id`
   - *Upload G-code* — file picker → `POST /api/gcodes/parse-filename` pre-fills `parts_per_plate` and model. `409` duplicate error shown inline.

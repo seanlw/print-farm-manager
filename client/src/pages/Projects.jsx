@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 const MODEL_OPTIONS = ['mk4', 'mk4s', 'c1', 'c1l', 'xl'];
 
@@ -135,10 +135,27 @@ function PartDetailsPanel({ part, gcodes, onRefresh }) {
   const [saving, setSaving] = useState(false);
   const [qtyError, setQtyError] = useState(null);
 
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft]     = useState('');
+  const nameEscapedRef = useRef(false);
+
   useEffect(() => {
     setHave(String(part.completed_qty));
     setNeed(String(part.target_qty));
   }, [part.completed_qty, part.target_qty]);
+
+  async function saveName() {
+    if (nameEscapedRef.current) { nameEscapedRef.current = false; return; }
+    const trimmed = nameDraft.trim();
+    setEditingName(false);
+    if (!trimmed || trimmed === part.name) return;
+    await fetch(`/api/parts/${part.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: trimmed }),
+    });
+    onRefresh();
+  }
 
   async function saveQtys() {
     const newHave = parseInt(have, 10);
@@ -183,6 +200,36 @@ function PartDetailsPanel({ part, gcodes, onRefresh }) {
 
   return (
     <div style={{ background: '#0a0f1a', borderRadius: 6, padding: '14px 16px', marginTop: 8, display: 'flex', flexDirection: 'column', gap: 18 }}>
+
+      {/* Part name */}
+      <div>
+        <div style={sectionLabel}>Part Name</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {editingName ? (
+            <input
+              type="text"
+              value={nameDraft}
+              onChange={e => setNameDraft(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') saveName();
+                if (e.key === 'Escape') { nameEscapedRef.current = true; setEditingName(false); }
+              }}
+              onBlur={saveName}
+              autoFocus
+              style={{ ...inputSx, fontSize: 14, fontWeight: 600, width: 220 }}
+            />
+          ) : (
+            <>
+              <span style={{ fontSize: 14, fontWeight: 600, color: '#e2e8f0' }}>{part.name}</span>
+              <button
+                onClick={() => { nameEscapedRef.current = false; setNameDraft(part.name); setEditingName(true); }}
+                title="Rename part"
+                style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 13, padding: '0 2px', lineHeight: 1 }}
+              >✎</button>
+            </>
+          )}
+        </div>
+      </div>
 
       {/* Quantities */}
       <div>
@@ -293,6 +340,12 @@ export default function Projects() {
   // Details panels (set of open part IDs)
   const [openPanels, setOpenPanels]       = useState(new Set());
 
+  // Inline rename
+  const [editingProjectName, setEditingProjectName] = useState(false);
+  const [projectNameDraft, setProjectNameDraft]     = useState('');
+  // Tracks Escape press on project rename so onBlur doesn't trigger a save after cancelling
+  const renameEscapedRef = useRef(false);
+
   const fetchProjects = useCallback(async () => {
     try {
       const res = await fetch('/api/projects');
@@ -394,6 +447,20 @@ export default function Projects() {
     setSelectedId(null); setDetailProject(null); setParts([]); setGcodesMap({});
     setOpenPanels(new Set());
   }
+
+  async function saveProjectName() {
+    if (renameEscapedRef.current) { renameEscapedRef.current = false; return; }
+    const trimmed = projectNameDraft.trim();
+    setEditingProjectName(false);
+    if (!trimmed || trimmed === detailProject.name) return;
+    await fetch(`/api/projects/${detailProject.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: trimmed }),
+    });
+    await Promise.all([fetchDetail(detailProject.id), fetchProjects()]);
+  }
+
 
   // ─── List view ───────────────────────────────────────────────────────────────
   if (selectedId == null) {
@@ -503,7 +570,29 @@ export default function Projects() {
         >
           ← Projects
         </button>
-        <h1 style={{ fontSize: 22, fontWeight: 700 }}>{detailProject.name}</h1>
+        {editingProjectName ? (
+          <input
+            type="text"
+            value={projectNameDraft}
+            onChange={e => setProjectNameDraft(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') saveProjectName();
+              if (e.key === 'Escape') { renameEscapedRef.current = true; setEditingProjectName(false); }
+            }}
+            onBlur={saveProjectName}
+            autoFocus
+            style={{ ...inputSx, fontSize: 20, fontWeight: 700, width: 280 }}
+          />
+        ) : (
+          <>
+            <h1 style={{ fontSize: 22, fontWeight: 700 }}>{detailProject.name}</h1>
+            <button
+              onClick={() => { renameEscapedRef.current = false; setProjectNameDraft(detailProject.name); setEditingProjectName(true); }}
+              title="Rename project"
+              style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 14, padding: '0 2px', lineHeight: 1 }}
+            >✎</button>
+          </>
+        )}
         <span style={{ background: projSt.bg, color: projSt.text, borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 700 }}>
           {projSt.label}
         </span>

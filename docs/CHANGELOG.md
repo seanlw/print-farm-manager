@@ -2,6 +2,25 @@
 
 ---
 
+## 2026-04-01 — Inline rename for projects and parts
+
+### Project rename (`client/src/pages/Projects.jsx`)
+A ✎ pencil button appears next to the project name in the detail view header. Clicking it replaces the `<h1>` with an inline text input pre-filled with the current name. Enter or blur saves; Escape cancels without saving. Calls the existing `PUT /api/projects/:id { name }` endpoint, then refreshes both the detail view and the project list so the new name is reflected everywhere immediately.
+
+### Part rename (`client/src/pages/Projects.jsx` — `PartDetailsPanel`)
+A new "Part Name" section at the top of the expanded Details panel shows the current part name with a ✎ pencil button. Same interaction model as project rename (Enter/blur saves, Escape cancels) → `PUT /api/parts/:id { name }`. The pencil is intentionally not shown on the main part row — the row remains fully read-only; all editing requires opening the Details panel first.
+
+### Tests (`server/tests/rename.test.js`)
+8 new tests covering both endpoints:
+- Rename succeeds and the new name is returned in the response
+- Updated name persists and is returned on a subsequent GET
+- Omitting `name` from a PUT body leaves the existing name intact (COALESCE behavior)
+- `PUT` with an unknown ID returns 404
+
+**Files changed:** `client/src/pages/Projects.jsx`, `server/tests/rename.test.js`
+
+---
+
 ## 2026-04-01 — Fleet cards: print progress bar and job info while printing
 
 ### Job progress stored on every poll (`server/poller.js`, `server/db.js`)

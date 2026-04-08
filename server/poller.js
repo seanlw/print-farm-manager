@@ -1,5 +1,5 @@
 const EventEmitter = require('events');
-const axios = require('axios');
+const { getDriver } = require('./drivers');
 
 const POLL_INTERVAL_MS = 15000;
 
@@ -50,24 +50,11 @@ class PrinterPoller extends EventEmitter {
     let jobProgress = null;
     let jobTimeRemaining = null;
 
-    try {
-      const response = await axios.get(`http://${printer.ip}/api/v1/status`, {
-        headers: { 'X-Api-Key': printer.api_key },
-        timeout: 8000,
-      });
-
-      const data = response.data;
-      // PrusaLink returns printer state under data.printer.state
-      newStatus = (data?.printer?.state || 'UNKNOWN').toUpperCase();
-
-      if (newStatus === 'PRINTING' && data?.job) {
-        jobProgress = data.job.progress ?? null;
-        jobTimeRemaining = data.job.time_remaining ?? null;
-      }
-    } catch (err) {
-      // Any network error → OFFLINE
-      newStatus = 'OFFLINE';
-    }
+    const driver = getDriver(printer.type);
+    const result = await driver.getStatus(printer);
+    newStatus = result.status;
+    jobProgress = result.progress;
+    jobTimeRemaining = result.timeRemaining;
 
     if (newStatus !== previousStatus) {
       // States considered "in-progress normal" — no hold on entry.

@@ -2,6 +2,27 @@
 
 ---
 
+## 2026-04-08 — Phase 6A: Prusa driver abstraction layer
+
+Extracted all PrusaLink-specific networking code into a new `server/drivers/` layer. No behavioral changes — all 52 Prusa printers continue to work exactly as before. This is the prerequisite for adding non-Prusa brands (Elegoo Centauri Carbon in Phase 6B).
+
+### New files
+- `server/drivers/prusa.js` — PrusaLink driver implementing `getStatus`, `uploadAndPrint`, `cancelJob` (stub), `checkIfPrinting`
+- `server/drivers/index.js` — driver registry; maps `printer.type` string → driver module via `getDriver(type)`
+
+### Modified files
+- `server/poller.js` — replaced direct `axios` PrusaLink call with `getDriver(printer.type).getStatus(printer)`; removed `axios` import
+- `server/scheduler.js` — replaced `_uploadGCode()` with `driver.uploadAndPrint(printer, gcodeFullPath, filename)`; replaced `_checkIfPrinting()` with `driver.checkIfPrinting(printer)`; removed both private methods; removed `axios` and `FormData` imports. Scheduler still resolves the full G-code path and checks file existence before calling the driver (file-system concern stays in scheduler, not the protocol driver).
+
+### What did NOT change
+- All polling, hold logic, cold-start handling, event emission — untouched in poller.js
+- Dispatch batching, ceiling math, retry logic, 409 handling — untouched in scheduler.js
+- DB schema, API routes, client UI — no changes
+
+**New dependency:** None for Phase 6A. `ws` will be added in Phase 6B for the Elegoo SDCP WebSocket driver.
+
+---
+
 ## 2026-04-08 — Dashboard shows all parts; update.bat reliability fixes
 
 ### Dashboard active projects — show all parts (`client/src/pages/Dashboard.jsx`)

@@ -1,8 +1,7 @@
 const EventEmitter = require('events');
-const axios = require('axios');
-const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
+const { getDriver } = require('./drivers');
 const notifications = require('./notifications');
 
 const GCODE_DIR = path.join(__dirname, 'gcode');
@@ -210,11 +209,26 @@ class JobScheduler extends EventEmitter {
       return null;
     }
 
+    // Resolve the G-code path on disk before invoking the driver.
+    // A missing file won't be fixed by retrying, so we bail immediately.
+    const driver = getDriver(printer.type);
+    const gcodeFilename = candidate.filepath.split(/[\\/]/).pop();
+    const gcodeFullPath = path.join(GCODE_DIR, gcodeFilename);
+    if (!fs.existsSync(gcodeFullPath)) {
+      this.db.prepare(`UPDATE jobs SET status = 'failed' WHERE id = ?`).run(jobId);
+      this.db.prepare('UPDATE printers SET is_held = 1 WHERE id = ?').run(printer.id);
+      const part = this.db.prepare('SELECT parts.name, projects.name AS project_name FROM parts JOIN projects ON projects.id = parts.project_id WHERE parts.id = ?').get(candidate.part_id);
+      notifications.add(
+        `G-code file missing for "${candidate.filename}" — re-upload the file for part "${part?.name}" in project "${part?.project_name}". Printer ${printer.name} has been held.`
+      );
+      return null;
+    }
+
     // Upload with retries. A transient network timeout (common when many printers
     // start simultaneously) will self-heal. Only after all attempts are exhausted
     // does the printer get re-held for operator attention.
     //
-    // 409 CONFLICT from PrusaLink means a file transfer is already in progress on the printer
+    // 409 CONFLICT means a file transfer is already in progress on the printer
     // (typically a previous attempt that timed out on our side but continued on the printer).
     // We wait 60 s before retrying in that case — much longer than the 5 s used for other errors.
     const MAX_RETRIES = 2;
@@ -222,13 +236,11 @@ class JobScheduler extends EventEmitter {
 
     for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
       try {
-        await this._uploadGCode(printer, candidate);
+        await driver.uploadAndPrint(printer, gcodeFullPath, candidate.filename);
         lastErr = null;
         break;
       } catch (err) {
         lastErr = err;
-        // Missing file won't be fixed by retrying — fail immediately
-        if (err.code === 'GCODE_MISSING') break;
         if (attempt <= MAX_RETRIES) {
           const isConflict = err.code === 'UPLOAD_CONFLICT';
           const waitMs = isConflict ? 60000 : 5000;
@@ -243,10 +255,10 @@ class JobScheduler extends EventEmitter {
 
     if (lastErr) {
       // Before giving up, check whether the printer is actually printing.
-      // This handles the case where our HTTP request timed out but the printer
+      // This handles the case where our request timed out but the printer
       // received the file and started the job anyway. If it is printing, treat
       // the upload as a success so the job is tracked correctly.
-      const isActuallyPrinting = await this._checkIfPrinting(printer);
+      const isActuallyPrinting = await driver.checkIfPrinting(printer);
       if (isActuallyPrinting) {
         this.db.prepare(`UPDATE jobs SET status = 'printing', started_at = ? WHERE id = ?`).run(Date.now(), jobId);
         console.log(`[scheduler] ${printer.name} upload appeared to fail but printer is printing — job ${jobId} recovered`);
@@ -256,14 +268,7 @@ class JobScheduler extends EventEmitter {
       this.db.prepare(`UPDATE jobs SET status = 'failed' WHERE id = ?`).run(jobId);
       // Re-hold the printer — upload failed, operator must inspect before next dispatch.
       this.db.prepare('UPDATE printers SET is_held = 1 WHERE id = ?').run(printer.id);
-      if (lastErr.code === 'GCODE_MISSING') {
-        const part = this.db.prepare('SELECT parts.name, projects.name AS project_name FROM parts JOIN projects ON projects.id = parts.project_id WHERE parts.id = ?').get(candidate.part_id);
-        notifications.add(
-          `G-code file missing for "${candidate.filename}" — re-upload the file for part "${part?.name}" in project "${part?.project_name}". Printer ${printer.name} has been held.`
-        );
-      } else {
-        console.error(`[scheduler] ${printer.name} dispatch failed after ${MAX_RETRIES + 1} attempts: ${lastErr.message}`);
-      }
+      console.error(`[scheduler] ${printer.name} dispatch failed after ${MAX_RETRIES + 1} attempts: ${lastErr.message}`);
       return null;
     }
 
@@ -273,84 +278,6 @@ class JobScheduler extends EventEmitter {
 
     console.log(`[scheduler] ${printer.name} ← ${candidate.filename}`);
     return jobId;
-  }
-
-  async _uploadGCode(printer, gcode) {
-    // Delete any existing copy on the USB drive — ignore 404 if it's not there.
-    // A 409 means a file transfer is already in progress on the printer; throw
-    // UPLOAD_CONFLICT so the caller can apply a longer retry delay.
-    try {
-      await axios.delete(
-        `http://${printer.ip}/api/v1/files/usb/${encodeURIComponent(gcode.filename)}`,
-        { headers: { 'X-Api-Key': printer.api_key }, timeout: 10000 }
-      );
-      console.log(`[scheduler] Deleted existing ${gcode.filename} from ${printer.name}`);
-    } catch (err) {
-      if (err.response?.status === 409) {
-        throw Object.assign(
-          new Error(`409 Conflict on pre-delete — file transfer likely still in progress on ${printer.name}`),
-          { code: 'UPLOAD_CONFLICT' }
-        );
-      }
-      if (!err.response || err.response.status !== 404) {
-        console.warn(`[scheduler] Pre-delete warning for ${printer.name}: ${err.message}`);
-      }
-    }
-
-    // Split on both / and \ to handle paths stored from either OS (e.g. old Mac paths
-    // restored to a Windows machine, or old Windows paths restored to a Mac).
-    const gcodeFilename = gcode.filepath.split(/[\\/]/).pop();
-    const gcodeFullPath = path.join(GCODE_DIR, gcodeFilename);
-    if (!fs.existsSync(gcodeFullPath)) {
-      throw Object.assign(
-        new Error(`G-code file not found on disk: ${gcode.filepath}`),
-        { code: 'GCODE_MISSING' }
-      );
-    }
-    const fileStream = fs.createReadStream(gcodeFullPath);
-    const stat = fs.statSync(gcodeFullPath);
-
-    try {
-      await axios.put(
-        `http://${printer.ip}/api/v1/files/usb/${encodeURIComponent(gcode.filename)}`,
-        fileStream,
-        {
-          headers: {
-            'X-Api-Key': printer.api_key,
-            'Content-Type': 'application/octet-stream',
-            'Content-Length': stat.size,
-            'Print-After-Upload': '1',
-          },
-          timeout: 300000, // 5 minutes — large files on slow networks
-          maxContentLength: Infinity,
-          maxBodyLength: Infinity,
-        }
-      );
-    } catch (err) {
-      if (err.response?.status === 409) {
-        throw Object.assign(
-          new Error(`409 Conflict on upload — file transfer likely still in progress on ${printer.name}`),
-          { code: 'UPLOAD_CONFLICT' }
-        );
-      }
-      throw err;
-    }
-  }
-
-  // Check PrusaLink directly to see if the printer is currently printing.
-  // Used after an upload failure to detect the case where our request timed out
-  // but the printer received the file and started the job anyway.
-  async _checkIfPrinting(printer) {
-    try {
-      const response = await axios.get(`http://${printer.ip}/api/v1/status`, {
-        headers: { 'X-Api-Key': printer.api_key },
-        timeout: 8000,
-      });
-      const state = (response.data?.printer?.state || '').toUpperCase();
-      return state === 'PRINTING' || state === 'PAUSED';
-    } catch (_) {
-      return false;
-    }
   }
 
   // ─── Finished handling ───────────────────────────────────────────────────────

@@ -1,17 +1,34 @@
+// Tests for scheduler._dispatchToPrinter file-handling logic.
+// The driver is mocked so no real network calls are made.
+// These tests cover the scheduler's own responsibilities:
+//   - Resolving the G-code path and checking file existence (GCODE_MISSING)
+//   - Stripping basename from old absolute paths (cross-OS path resolution)
+//   - Calling driver.uploadAndPrint with the resolved absolute path
+//   - Upload failure recovery via driver.checkIfPrinting
+//   - Holding the printer after all retries are exhausted
+
 const path = require('path');
 const fs   = require('fs');
+const Database = require('better-sqlite3');
 
-jest.mock('axios');
-const axios = require('axios');
+// Mock drivers module before requiring the scheduler
+const mockDriver = {
+  uploadAndPrint: jest.fn(),
+  checkIfPrinting: jest.fn(),
+};
+jest.mock('../drivers', () => ({
+  getDriver: jest.fn(() => mockDriver),
+}));
 
-const Database     = require('better-sqlite3');
+// Mock notifications so we can assert on it without side effects
+jest.mock('../notifications', () => ({ add: jest.fn() }));
+const notifications = require('../notifications');
+
 const JobScheduler = require('../scheduler');
 
 const GCODE_DIR = path.join(__dirname, '..', 'gcode');
 
-const fakePrinter = { id: 1, name: 'Test Printer', ip: '192.168.1.1', api_key: 'key', model: 'mk4s' };
-
-// Files created during tests — cleaned up in afterAll after all streams have closed
+// Files created during tests — cleaned up after all tests complete
 const filesToClean = [];
 
 beforeAll(() => {
@@ -25,29 +42,68 @@ afterAll(() => {
 });
 
 beforeEach(() => {
-  axios.delete.mockResolvedValue({});
-  // Destroy any ReadStream passed as the body — mirrors what real axios does when
-  // the upload completes. We also attach an error listener before destroying:
-  // Node.js's async autoOpen is already in-flight when destroy() is called, so
-  // when the open callback fires after the file is deleted (in afterAll) the stream
-  // emits ENOENT. Without a listener that would be an unhandled error event.
-  axios.put.mockImplementation((_url, data) => {
-    if (data && typeof data.destroy === 'function') {
-      data.on('error', () => {});
-      data.destroy();
-    }
-    return Promise.resolve({});
-  });
+  mockDriver.uploadAndPrint.mockResolvedValue(undefined);
+  mockDriver.checkIfPrinting.mockResolvedValue(false);
+  notifications.add.mockClear();
 });
 
 afterEach(() => {
   jest.clearAllMocks();
 });
 
-function makeScheduler() {
+// Build an in-memory DB pre-populated with one printer, project, part, and gcode.
+// gcodeFilepath is the value stored in the gcodes table (may be bare or absolute).
+function makeDb(gcodeFilepath) {
   const db = new Database(':memory:');
-  return new JobScheduler(db, { on: () => {} });
+  db.exec(`
+    CREATE TABLE printers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL, ip TEXT NOT NULL, api_key TEXT NOT NULL,
+      model TEXT NOT NULL, type TEXT DEFAULT 'prusa',
+      status TEXT DEFAULT 'IDLE', is_held INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE projects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL, status TEXT DEFAULT 'active',
+      priority INTEGER DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE parts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL, name TEXT NOT NULL,
+      target_qty INTEGER NOT NULL, completed_qty INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'open', sort_order INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE gcodes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      part_id INTEGER NOT NULL, printer_model TEXT NOT NULL,
+      filename TEXT NOT NULL, filepath TEXT NOT NULL,
+      parts_per_plate INTEGER NOT NULL, created_at INTEGER NOT NULL
+    );
+    CREATE TABLE jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      part_id INTEGER NOT NULL, printer_id INTEGER NOT NULL,
+      gcode_id INTEGER, parts_per_plate INTEGER NOT NULL,
+      status TEXT DEFAULT 'queued',
+      started_at INTEGER, finished_at INTEGER, created_at INTEGER NOT NULL
+    );
+  `);
+
+  const now = Date.now();
+  db.prepare(`INSERT INTO printers (name, ip, api_key, model, type, status, is_held, is_active, created_at)
+              VALUES ('P1', '192.168.1.1', 'key', 'mk4s', 'prusa', 'IDLE', 0, 1, ?)`).run(now);
+  db.prepare(`INSERT INTO projects (name, status, priority, created_at, updated_at)
+              VALUES ('Proj', 'active', 0, ?, ?)`).run(now, now);
+  db.prepare(`INSERT INTO parts (project_id, name, target_qty, completed_qty, status, sort_order, created_at, updated_at)
+              VALUES (1, 'Part A', 10, 0, 'open', 0, ?, ?)`).run(now, now);
+  db.prepare(`INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, created_at)
+              VALUES (1, 'mk4s', 'test.bgcode', ?, 2, ?)`).run(gcodeFilepath, now);
+
+  return db;
 }
+
+const fakePrinter = { id: 1, name: 'P1', ip: '192.168.1.1', api_key: 'key', model: 'mk4s', type: 'prusa', status: 'IDLE', is_held: 0, is_active: 1 };
 
 function createTestFile(filename) {
   const filePath = path.join(GCODE_DIR, filename);
@@ -56,165 +112,173 @@ function createTestFile(filename) {
   return filePath;
 }
 
-describe('_uploadGCode — 409 UPLOAD_CONFLICT', () => {
-  test('throws UPLOAD_CONFLICT when PrusaLink DELETE returns 409', async () => {
-    const scheduler = makeScheduler();
-    const filename = `conflict_del_${Date.now()}.bgcode`;
-    createTestFile(filename);
+// ─── GCODE_MISSING ────────────────────────────────────────────────────────────
 
-    axios.delete.mockRejectedValueOnce(
-      Object.assign(new Error('Request failed with status code 409'), {
-        response: { status: 409 },
-      })
-    );
+describe('_dispatchToPrinter — GCODE_MISSING', () => {
+  test('marks job failed and holds printer when file does not exist on disk', async () => {
+    const db = makeDb('nonexistent.bgcode');
+    const scheduler = new JobScheduler(db, { on: () => {} });
 
-    await expect(scheduler._uploadGCode(fakePrinter, { filename, filepath: filename }))
-      .rejects.toMatchObject({ code: 'UPLOAD_CONFLICT' });
+    const jobId = await scheduler._dispatchToPrinter(fakePrinter);
 
-    // Should not have attempted the PUT when DELETE conflicted
-    expect(axios.put).not.toHaveBeenCalled();
+    expect(jobId).toBeNull();
+    // Printer should be held
+    const printer = db.prepare('SELECT is_held FROM printers WHERE id = 1').get();
+    expect(printer.is_held).toBe(1);
+    // Job should be marked failed
+    const job = db.prepare("SELECT status FROM jobs ORDER BY id DESC LIMIT 1").get();
+    expect(job.status).toBe('failed');
   });
 
-  test('throws UPLOAD_CONFLICT when PrusaLink PUT returns 409', async () => {
-    const scheduler = makeScheduler();
-    const filename = `conflict_put_${Date.now()}.bgcode`;
-    createTestFile(filename);
+  test('sends a notification when file is missing', async () => {
+    const db = makeDb('also_missing.bgcode');
+    const scheduler = new JobScheduler(db, { on: () => {} });
 
-    // DELETE succeeds, PUT returns 409 — destroy stream to avoid unhandled ENOENT after cleanup
-    axios.delete.mockResolvedValueOnce({});
-    axios.put.mockImplementationOnce((_url, data) => {
-      if (data && typeof data.destroy === 'function') {
-        data.on('error', () => {});
-        data.destroy();
-      }
-      return Promise.reject(
-        Object.assign(new Error('Request failed with status code 409'), { response: { status: 409 } })
-      );
-    });
+    await scheduler._dispatchToPrinter(fakePrinter);
 
-    await expect(scheduler._uploadGCode(fakePrinter, { filename, filepath: filename }))
-      .rejects.toMatchObject({ code: 'UPLOAD_CONFLICT' });
+    expect(notifications.add).toHaveBeenCalledTimes(1);
+    const msg = notifications.add.mock.calls[0][0];
+    expect(msg).toMatch(/G-code file missing/);
+    // Notification should name the part, project, and printer so the operator knows what to fix
+    expect(msg).toMatch(/Part A/);
+    expect(msg).toMatch(/Proj/);
+    expect(msg).toMatch(/P1/);
   });
 
-  test('does not throw UPLOAD_CONFLICT for non-409 PUT errors', async () => {
-    const scheduler = makeScheduler();
-    const filename = `timeout_err_${Date.now()}.bgcode`;
-    createTestFile(filename);
+  test('does not call driver.uploadAndPrint when file is missing', async () => {
+    const db = makeDb('ghost.bgcode');
+    const scheduler = new JobScheduler(db, { on: () => {} });
 
-    axios.delete.mockResolvedValueOnce({});
-    // No .response — simulates a network-level failure, not an HTTP 409
-    axios.put.mockImplementationOnce((_url, data) => {
-      if (data && typeof data.destroy === 'function') {
-        data.on('error', () => {});
-        data.destroy();
-      }
-      return Promise.reject(new Error('ECONNRESET'));
-    });
+    await scheduler._dispatchToPrinter(fakePrinter);
 
-    await expect(scheduler._uploadGCode(fakePrinter, { filename, filepath: filename }))
-      .rejects.toMatchObject({ message: 'ECONNRESET' });
+    expect(mockDriver.uploadAndPrint).not.toHaveBeenCalled();
   });
 });
 
-describe('_checkIfPrinting', () => {
-  test('returns true when PrusaLink reports PRINTING', async () => {
-    const scheduler = makeScheduler();
-    axios.get.mockResolvedValueOnce({ data: { printer: { state: 'PRINTING' } } });
+// ─── Path resolution ──────────────────────────────────────────────────────────
 
-    const result = await scheduler._checkIfPrinting(fakePrinter);
-    expect(result).toBe(true);
-  });
-
-  test('returns true when PrusaLink reports PAUSED', async () => {
-    const scheduler = makeScheduler();
-    axios.get.mockResolvedValueOnce({ data: { printer: { state: 'PAUSED' } } });
-
-    const result = await scheduler._checkIfPrinting(fakePrinter);
-    expect(result).toBe(true);
-  });
-
-  test('returns false when PrusaLink reports IDLE', async () => {
-    const scheduler = makeScheduler();
-    axios.get.mockResolvedValueOnce({ data: { printer: { state: 'IDLE' } } });
-
-    const result = await scheduler._checkIfPrinting(fakePrinter);
-    expect(result).toBe(false);
-  });
-
-  test('returns false when printer is unreachable (network error)', async () => {
-    const scheduler = makeScheduler();
-    axios.get.mockRejectedValueOnce(new Error('ETIMEDOUT'));
-
-    const result = await scheduler._checkIfPrinting(fakePrinter);
-    expect(result).toBe(false);
-  });
-
-  test('is case-insensitive — lowercase state still matches', async () => {
-    const scheduler = makeScheduler();
-    axios.get.mockResolvedValueOnce({ data: { printer: { state: 'printing' } } });
-
-    const result = await scheduler._checkIfPrinting(fakePrinter);
-    expect(result).toBe(true);
-  });
-});
-
-describe('_uploadGCode — GCODE_MISSING', () => {
-  test('throws with code GCODE_MISSING when file does not exist on disk', async () => {
-    const scheduler = makeScheduler();
-    const gcode = { filename: 'nonexistent.bgcode', filepath: 'nonexistent.bgcode' };
-
-    await expect(scheduler._uploadGCode(fakePrinter, gcode))
-      .rejects.toMatchObject({ code: 'GCODE_MISSING' });
-  });
-
-  test('does not call axios.put when file is missing', async () => {
-    const scheduler = makeScheduler();
-    const gcode = { filename: 'also_missing.bgcode', filepath: 'also_missing.bgcode' };
-
-    await expect(scheduler._uploadGCode(fakePrinter, gcode)).rejects.toThrow();
-    expect(axios.put).not.toHaveBeenCalled();
-  });
-});
-
-describe('_uploadGCode — path resolution', () => {
-  test('finds file when filepath is a bare filename', async () => {
-    const scheduler = makeScheduler();
+describe('_dispatchToPrinter — path resolution', () => {
+  test('calls driver.uploadAndPrint with an absolute path when filepath is a bare filename', async () => {
     const filename = `bare_${Date.now()}.bgcode`;
     createTestFile(filename);
+    const db = makeDb(filename); // bare filename stored in DB
+    const scheduler = new JobScheduler(db, { on: () => {} });
 
-    await scheduler._uploadGCode(fakePrinter, { filename, filepath: filename });
-    expect(axios.put).toHaveBeenCalledTimes(1);
+    await scheduler._dispatchToPrinter(fakePrinter);
+
+    expect(mockDriver.uploadAndPrint).toHaveBeenCalledTimes(1);
+    const [, resolvedPath] = mockDriver.uploadAndPrint.mock.calls[0];
+    expect(path.isAbsolute(resolvedPath)).toBe(true);
+    expect(resolvedPath).toBe(path.join(GCODE_DIR, filename));
   });
 
-  test('finds file when filepath is an old absolute Unix path', async () => {
-    const scheduler = makeScheduler();
+  test('strips old absolute Unix path to basename before resolving', async () => {
     const filename = `abs_unix_${Date.now()}.bgcode`;
     createTestFile(filename);
-
     const oldPath = `/Users/olduser/dev/print-farm-manager/server/gcode/${filename}`;
-    await scheduler._uploadGCode(fakePrinter, { filename, filepath: oldPath });
-    expect(axios.put).toHaveBeenCalledTimes(1);
+    const db = makeDb(oldPath); // old absolute path stored in DB
+    const scheduler = new JobScheduler(db, { on: () => {} });
+
+    await scheduler._dispatchToPrinter(fakePrinter);
+
+    expect(mockDriver.uploadAndPrint).toHaveBeenCalledTimes(1);
+    const [, resolvedPath] = mockDriver.uploadAndPrint.mock.calls[0];
+    expect(resolvedPath).toBe(path.join(GCODE_DIR, filename));
   });
 
-  test('finds file when filepath is an old absolute Windows path', async () => {
-    const scheduler = makeScheduler();
+  test('strips old absolute Windows path to basename before resolving', async () => {
     const filename = `abs_win_${Date.now()}.bgcode`;
     createTestFile(filename);
-
     const oldPath = `C:\\Users\\operator\\print-farm-manager\\server\\gcode\\${filename}`;
-    await scheduler._uploadGCode(fakePrinter, { filename, filepath: oldPath });
-    expect(axios.put).toHaveBeenCalledTimes(1);
+    const db = makeDb(oldPath);
+    const scheduler = new JobScheduler(db, { on: () => {} });
+
+    await scheduler._dispatchToPrinter(fakePrinter);
+
+    expect(mockDriver.uploadAndPrint).toHaveBeenCalledTimes(1);
+    const [, resolvedPath] = mockDriver.uploadAndPrint.mock.calls[0];
+    expect(resolvedPath).toBe(path.join(GCODE_DIR, filename));
   });
 
-  test('throws GCODE_MISSING when basename of absolute path is not in GCODE_DIR', async () => {
-    const scheduler = makeScheduler();
-    // Absolute path whose basename doesn't exist in GCODE_DIR
-    const gcode = {
-      filename: 'ghost.bgcode',
-      filepath: '/old/machine/path/ghost.bgcode',
-    };
+  test('GCODE_MISSING when basename of absolute path is not in GCODE_DIR', async () => {
+    const db = makeDb('/old/machine/path/ghost_abs.bgcode');
+    const scheduler = new JobScheduler(db, { on: () => {} });
 
-    await expect(scheduler._uploadGCode(fakePrinter, gcode))
-      .rejects.toMatchObject({ code: 'GCODE_MISSING' });
+    const jobId = await scheduler._dispatchToPrinter(fakePrinter);
+
+    expect(jobId).toBeNull();
+    expect(mockDriver.uploadAndPrint).not.toHaveBeenCalled();
+    expect(notifications.add).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── Upload failure recovery ───────────────────────────────────────────────────
+// These tests use fake timers to avoid waiting for the real 5s retry delays.
+
+describe('_dispatchToPrinter — upload failure recovery', () => {
+  beforeEach(() => { jest.useFakeTimers(); });
+  afterEach(() => { jest.useRealTimers(); });
+
+  test('recovers job when uploadAndPrint fails but checkIfPrinting returns true', async () => {
+    const filename = `recover_${Date.now()}.bgcode`;
+    createTestFile(filename);
+    const db = makeDb(filename);
+    const scheduler = new JobScheduler(db, { on: () => {} });
+
+    // All upload attempts fail, but printer is actually printing
+    mockDriver.uploadAndPrint.mockRejectedValue(new Error('ETIMEDOUT'));
+    mockDriver.checkIfPrinting.mockResolvedValue(true);
+
+    const promise = scheduler._dispatchToPrinter(fakePrinter);
+    await jest.runAllTimersAsync();
+    const jobId = await promise;
+
+    expect(jobId).not.toBeNull();
+    const job = db.prepare('SELECT status FROM jobs WHERE id = ?').get(jobId);
+    expect(job.status).toBe('printing');
+    // Printer should NOT be held when recovery succeeds
+    const printer = db.prepare('SELECT is_held FROM printers WHERE id = 1').get();
+    expect(printer.is_held).toBe(0);
+  });
+
+  test('marks job failed and holds printer when all retries exhausted and not printing', async () => {
+    const filename = `exhaust_${Date.now()}.bgcode`;
+    createTestFile(filename);
+    const db = makeDb(filename);
+    const scheduler = new JobScheduler(db, { on: () => {} });
+
+    mockDriver.uploadAndPrint.mockRejectedValue(new Error('ECONNRESET'));
+    mockDriver.checkIfPrinting.mockResolvedValue(false);
+
+    const promise = scheduler._dispatchToPrinter(fakePrinter);
+    await jest.runAllTimersAsync();
+    const jobId = await promise;
+
+    expect(jobId).toBeNull();
+    const job = db.prepare("SELECT status FROM jobs ORDER BY id DESC LIMIT 1").get();
+    expect(job.status).toBe('failed');
+    const printer = db.prepare('SELECT is_held FROM printers WHERE id = 1').get();
+    expect(printer.is_held).toBe(1);
+  });
+
+  test('retries up to MAX_RETRIES times before giving up', async () => {
+    const filename = `retry_${Date.now()}.bgcode`;
+    createTestFile(filename);
+    const db = makeDb(filename);
+    const scheduler = new JobScheduler(db, { on: () => {} });
+
+    // Succeed on the 2nd attempt
+    mockDriver.uploadAndPrint
+      .mockRejectedValueOnce(new Error('ECONNRESET'))
+      .mockResolvedValueOnce(undefined);
+
+    const promise = scheduler._dispatchToPrinter(fakePrinter);
+    await jest.runAllTimersAsync();
+    const jobId = await promise;
+
+    expect(jobId).not.toBeNull();
+    expect(mockDriver.uploadAndPrint).toHaveBeenCalledTimes(2);
+    const job = db.prepare('SELECT status FROM jobs WHERE id = ?').get(jobId);
+    expect(job.status).toBe('printing');
   });
 });

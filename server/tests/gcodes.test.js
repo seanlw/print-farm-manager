@@ -38,6 +38,7 @@ beforeAll(() => {
       filepath TEXT NOT NULL,
       parts_per_plate INTEGER NOT NULL,
       est_print_secs INTEGER,
+      ams_slot INTEGER,
       created_at INTEGER NOT NULL
     );
     CREATE TABLE printers (
@@ -70,8 +71,11 @@ beforeAll(() => {
   `);
 
   // Seed models used by upload tests
-  db.exec(`INSERT INTO printer_models VALUES ('mk4s', 'MK4S', 'prusa')`);
-  db.exec(`INSERT INTO printer_models VALUES ('c1',   'Core One', 'prusa')`);
+  db.exec(`INSERT INTO printer_models VALUES ('mk4s', 'MK4S',       'prusa')`);
+  db.exec(`INSERT INTO printer_models VALUES ('c1',   'Core One',   'prusa')`);
+  db.exec(`INSERT INTO printer_models VALUES ('x1c',  'X1 Carbon',  'bambu')`);
+  db.exec(`INSERT INTO printer_models VALUES ('a1',   'A1',         'bambu')`);
+  db.exec(`INSERT INTO printer_models VALUES ('p1s',  'P1S',        'bambu')`);
 
   if (!fs.existsSync(GCODE_DIR)) fs.mkdirSync(GCODE_DIR, { recursive: true });
 
@@ -176,6 +180,59 @@ describe('POST /api/gcodes/upload', () => {
     fs.unlinkSync(tmpFile);
 
     expect(res.status).toBe(400);
+  });
+
+  test('stores ams_slot when provided', async () => {
+    const tmpFile = makeTempGcode('bambu_ams.3mf');
+
+    const res = await request(app)
+      .post('/api/gcodes/upload')
+      .attach('file', tmpFile)
+      .field('part_id', '1')
+      .field('parts_per_plate', '1')
+      .field('printer_model', 'x1c')
+      .field('ams_slot', '2');
+
+    fs.unlinkSync(tmpFile);
+
+    expect(res.status).toBe(201);
+    expect(res.body.ams_slot).toBe(2);
+    uploadedPath = res.body.filepath;
+  });
+
+  test('stores ams_slot -1 for external spool', async () => {
+    const tmpFile = makeTempGcode('bambu_ext.3mf');
+
+    const res = await request(app)
+      .post('/api/gcodes/upload')
+      .attach('file', tmpFile)
+      .field('part_id', '1')
+      .field('parts_per_plate', '1')
+      .field('printer_model', 'a1')        // distinct model to avoid 409
+      .field('ams_slot', '-1');
+
+    fs.unlinkSync(tmpFile);
+
+    expect(res.status).toBe(201);
+    expect(res.body.ams_slot).toBe(-1);
+    uploadedPath = res.body.filepath;
+  });
+
+  test('ams_slot is null when not provided (non-Bambu upload)', async () => {
+    const tmpFile = makeTempGcode('prusa_no_ams.bgcode');
+
+    const res = await request(app)
+      .post('/api/gcodes/upload')
+      .attach('file', tmpFile)
+      .field('part_id', '1')
+      .field('parts_per_plate', '3')
+      .field('printer_model', 'p1s');   // distinct model to avoid 409
+
+    fs.unlinkSync(tmpFile);
+
+    expect(res.status).toBe(201);
+    expect(res.body.ams_slot).toBeNull();
+    uploadedPath = res.body.filepath;
   });
 
   test('returns 409 on duplicate (part_id, printer_model)', async () => {

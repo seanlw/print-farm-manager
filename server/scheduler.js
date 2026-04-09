@@ -307,13 +307,32 @@ class JobScheduler extends EventEmitter {
   // ─── Finished handling ───────────────────────────────────────────────────────
 
   _handleFinished(printer) {
-    // Find the job currently marked printing for this printer
-    const job = this.db.prepare(`
+    // Find the job currently marked printing for this printer.
+    // Fallback: also check for a recently-failed job. Bambu printers use a persistent
+    // MQTT connection — if the connection briefly drops during a print, the 'reconnect'
+    // event fires, getStatus() returns OFFLINE, and _handlePrinterUnavailable marks the
+    // job 'failed'. But the printer keeps printing. When it finishes, there is no
+    // 'printing' job to find. Recovering the most recent failed job (within 24 h)
+    // correctly credits the completed print.
+    let job = this.db.prepare(`
       SELECT * FROM jobs
       WHERE printer_id = ? AND status = 'printing'
       ORDER BY started_at DESC
       LIMIT 1
     `).get(printer.id);
+
+    if (!job) {
+      job = this.db.prepare(`
+        SELECT * FROM jobs
+        WHERE printer_id = ? AND status = 'failed' AND started_at > ?
+        ORDER BY started_at DESC
+        LIMIT 1
+      `).get(printer.id, Date.now() - 24 * 60 * 60 * 1000);
+
+      if (job) {
+        console.log(`[scheduler] FINISHED on ${printer.name} — recovering job ${job.id} (was marked failed, likely transient MQTT disconnect during print)`);
+      }
+    }
 
     if (!job) {
       console.warn(`[scheduler] FINISHED on ${printer.name} but no printing job found — may be outside system`);
@@ -350,7 +369,7 @@ class JobScheduler extends EventEmitter {
     if (job.gcode_id) {
       const gcode = this.db.prepare('SELECT filepath FROM gcodes WHERE id = ?').get(job.gcode_id);
       if (gcode) {
-        const driver = getDriver(printer);
+        const driver = getDriver(printer.type);
         if (typeof driver.deleteFile === 'function') {
           driver.deleteFile(printer, path.basename(gcode.filepath)).catch(() => {});
         }

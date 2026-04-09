@@ -177,20 +177,30 @@ const server = app.listen(PORT, () => {
         ORDER BY started_at DESC LIMIT 1
       `).get(printer.id);
 
-      if (printingJob) {
+      // Also check for a recently-failed job — handles Bambu MQTT reconnect during a
+      // print, where _handlePrinterUnavailable marked the job 'failed' but the printer
+      // kept printing and finished. _handleFinished should have recovered it already,
+      // but cover the race where the operator hits Set Ready before the next poll cycle.
+      const activeJob = printingJob || db.prepare(`
+        SELECT * FROM jobs WHERE printer_id = ? AND status = 'failed' AND started_at > ?
+        ORDER BY started_at DESC LIMIT 1
+      `).get(printer.id, Date.now() - 24 * 60 * 60 * 1000);
+
+      if (activeJob) {
         const creditQty = (confirmed_qty != null && !isNaN(parseInt(confirmed_qty, 10)))
           ? parseInt(confirmed_qty, 10)
-          : printingJob.parts_per_plate;
+          : activeJob.parts_per_plate;
 
         db.prepare(`UPDATE jobs SET status = 'finished', finished_at = ? WHERE id = ?`)
-          .run(now, printingJob.id);
+          .run(now, activeJob.id);
 
         db.prepare(`
           UPDATE parts SET completed_qty = completed_qty + ?, updated_at = ? WHERE id = ?
-        `).run(creditQty, now, printingJob.part_id);
+        `).run(creditQty, now, activeJob.part_id);
 
-        const part = db.prepare('SELECT * FROM parts WHERE id = ?').get(printingJob.part_id);
-        console.log(`[server] ${printer.name} missed-finish confirmed good — Part "${part.name}" ${part.completed_qty}/${part.target_qty}`);
+        const part = db.prepare('SELECT * FROM parts WHERE id = ?').get(activeJob.part_id);
+        const label = printingJob ? 'missed-finish' : 'MQTT-recovered finish';
+        console.log(`[server] ${printer.name} ${label} confirmed good — Part "${part.name}" ${part.completed_qty}/${part.target_qty}`);
 
         if (part.completed_qty >= part.target_qty) {
           db.prepare(`UPDATE parts SET status = 'closed', updated_at = ? WHERE id = ?`).run(now, part.id);

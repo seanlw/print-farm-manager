@@ -345,6 +345,17 @@ class JobScheduler extends EventEmitter {
     this.db.prepare('UPDATE printers SET is_held = 1 WHERE id = ?').run(printer.id);
     events.insert(printer.id, 'job_finished', `Job ${job.id} — ${part.name} (${job.parts_per_plate} parts)`);
     console.log(`[scheduler] ${printer.name} held — awaiting operator confirmation`);
+
+    // Clean up the file from the printer's SD card (Bambu only — other drivers ignore this)
+    if (job.gcode_id) {
+      const gcode = this.db.prepare('SELECT filepath FROM gcodes WHERE id = ?').get(job.gcode_id);
+      if (gcode) {
+        const driver = getDriver(printer);
+        if (typeof driver.deleteFile === 'function') {
+          driver.deleteFile(printer, path.basename(gcode.filepath)).catch(() => {});
+        }
+      }
+    }
   }
 
   _closePart(part, now) {

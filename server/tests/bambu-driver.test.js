@@ -169,7 +169,7 @@ describe('uploadAndPrint — .3mf (project_file)', () => {
     expect(findPayload('project_file').url).toBe('ftp:///1234_part.3mf');
   });
 
-  test('AMS slot 0: use_ams true, ams_mapping [-1,-1,-1,-1,0]', async () => {
+  test('AMS slot 0: use_ams true, ams_mapping [0]', async () => {
     const printer = nextPrinter();
     bambu.getStatus(printer);
     mockPublish.mockClear();
@@ -178,20 +178,20 @@ describe('uploadAndPrint — .3mf (project_file)', () => {
 
     const p = findPayload('project_file');
     expect(p.use_ams).toBe(true);
-    expect(p.ams_mapping).toEqual([-1, -1, -1, -1, 0]);
+    expect(p.ams_mapping).toEqual([0]);
   });
 
-  test('AMS slot 3: ams_mapping uses correct index', async () => {
+  test('AMS slot 3: ams_mapping is [3]', async () => {
     const printer = nextPrinter();
     bambu.getStatus(printer);
     mockPublish.mockClear();
 
     await bambu.uploadAndPrint(printer, '/tmp/1234_part.3mf', 'part.3mf', { amsSlot: 3 });
 
-    expect(findPayload('project_file').ams_mapping).toEqual([-1, -1, -1, -1, 3]);
+    expect(findPayload('project_file').ams_mapping).toEqual([3]);
   });
 
-  test('external spool (amsSlot: -1): use_ams false, ams_mapping empty string', async () => {
+  test('external spool (amsSlot: -1): use_ams false, ams_mapping empty array', async () => {
     const printer = nextPrinter();
     bambu.getStatus(printer);
     mockPublish.mockClear();
@@ -200,7 +200,7 @@ describe('uploadAndPrint — .3mf (project_file)', () => {
 
     const p = findPayload('project_file');
     expect(p.use_ams).toBe(false);
-    expect(p.ams_mapping).toBe('');
+    expect(p.ams_mapping).toEqual([]);
   });
 
   test('null amsSlot defaults to use_ams false (external spool)', async () => {

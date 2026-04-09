@@ -264,6 +264,12 @@ async function uploadAndPrint(printer, gcodeFullPath, _filename, options = {}) {
     // .3mf files use project_file command.
     // url uses ftp:/// to reference a file on the printer's own SD card.
     // amsSlot drives whether to use AMS (0–N) or external spool (-1 / null).
+    //
+    // ams_mapping format for LAN printing: a flat array where index = filament slot
+    // in the .3mf (0-based) and value = physical AMS tray ID (0-15).
+    // For single-color prints: [amsSlot] (one element).
+    // For external spool or no AMS: [] (empty — printer uses embedded .3mf settings).
+    // Ref: https://github.com/Doridian/OpenBambuAPI (issue #38 + mqtt.md)
     const subtaskName = path.basename(onPrinterFilename, '.3mf');
     const useAms      = amsSlot != null && amsSlot >= 0;
     printPayload = {
@@ -279,7 +285,7 @@ async function uploadAndPrint(printer, gcodeFullPath, _filename, options = {}) {
       vibration_cali:  true,
       layer_inspect:   false,
       use_ams:         useAms,
-      ams_mapping:     useAms ? [-1, -1, -1, -1, amsSlot] : '',
+      ams_mapping:     useAms ? [amsSlot] : [],
       profile_id:      '0',
       project_id:      '0',
       subtask_id:      '0',
@@ -297,6 +303,36 @@ async function uploadAndPrint(printer, gcodeFullPath, _filename, options = {}) {
   }
 
   conn.client.publish(`device/${printer.serial_number}/request`, JSON.stringify({ print: printPayload }));
+}
+
+// ─── File cleanup ─────────────────────────────────────────────────────────────
+
+// Deletes a file from the printer's SD card via FTPS.
+// Called by the scheduler after a job finishes to prevent accumulation of files.
+async function deleteFile(printer, filename) {
+  if (!filename) return;
+
+  const ftpClient = new ftp.Client();
+  ftpClient.ftp.verbose = !!process.env.DEBUG_BAMBU;
+
+  try {
+    await ftpClient.access({
+      host:    printer.ip,
+      port:    990,
+      user:    'bblp',
+      password: printer.api_key,
+      secure:  'implicit',
+      secureOptions: { rejectUnauthorized: false },
+    });
+
+    await ftpClient.remove(filename);
+    console.log(`[bambu] Deleted ${filename} from ${printer.name}`);
+  } catch (err) {
+    // Non-fatal — file may have already been deleted or never uploaded
+    console.warn(`[bambu] Could not delete ${filename} from ${printer.name}: ${err.message}`);
+  } finally {
+    ftpClient.close();
+  }
 }
 
 // ─── Cancel ──────────────────────────────────────────────────────────────────
@@ -325,4 +361,4 @@ async function checkIfPrinting(printer) {
   return status === 'PRINTING' || status === 'PAUSED';
 }
 
-module.exports = { getStatus, uploadAndPrint, cancelJob, checkIfPrinting, getAmsSlots };
+module.exports = { getStatus, uploadAndPrint, cancelJob, checkIfPrinting, getAmsSlots, deleteFile };

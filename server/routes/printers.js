@@ -7,7 +7,7 @@ const events = require('../events');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-const ELEGOO_TYPES = new Set(['elegoo-centauri']); // types that store no api_key
+const NO_API_KEY_TYPES = new Set(['elegoo-centauri', 'klipper']); // types that store no api_key
 
 // Normalize a raw model string to a canonical ID (lowercase, trimmed).
 // Validation against the registered model list is done via DB query at each call site.
@@ -91,7 +91,7 @@ module.exports = (db) => {
   router.post('/', (req, res) => {
     const { name, ip, api_key, serial_number, group_name, type, model } = req.body;
     const printerType = type || 'prusa';
-    const requiresApiKey = !ELEGOO_TYPES.has(printerType);
+    const requiresApiKey = !NO_API_KEY_TYPES.has(printerType);
     if (!name || !ip || !model || (requiresApiKey && !api_key)) {
       const keyMsg = requiresApiKey ? ', api_key' : '';
       return res.status(400).json({ error: `name, ip${keyMsg}, and model are required` });
@@ -304,7 +304,7 @@ module.exports = (db) => {
       const group_name    = (row.group         || '').trim() || null;
       const type          = (row.type          || 'prusa').trim();
 
-      const rowRequiresApiKey = !ELEGOO_TYPES.has(type);
+      const rowRequiresApiKey = !NO_API_KEY_TYPES.has(type);
       if (!name || !ip || (rowRequiresApiKey && !api_key)) {
         summary.flagged.push({ row, reason: 'Missing required field (name, ip, or api_key)' });
         continue;

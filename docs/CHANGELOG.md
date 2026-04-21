@@ -2,6 +2,39 @@
 
 ---
 
+## 2026-04-20 — Klipper (Moonraker) driver — Phase 6C
+
+Adds support for Klipper-firmware printers (Voron, etc.) via the Moonraker REST API. No new dependencies — Moonraker is plain HTTP on port 7125 using `axios` and `form-data`, both already present.
+
+**Driver interface:**
+- `getStatus`: queries `/printer/objects/query?print_stats&virtual_sdcard&webhooks`. Maps `print_stats.state` (standby/printing/paused/complete/error/cancelled) to canonical status. Reports OFFLINE if `webhooks.state` is not `ready`. Time remaining is estimated from elapsed `print_duration` and `virtual_sdcard.progress`.
+- `uploadAndPrint`: multipart POST to `/server/files/gcodes/`, 1s delay, then POST to `/printer/print/start?filename=`. Moonraker overwrites on duplicate filename — no pre-delete needed.
+- `cancelJob`: POST to `/printer/print/cancel`.
+- `currentFile`: populated from `print_stats.filename` while printing.
+
+**Status mapping:**
+
+| Moonraker state | Canonical |
+|---|---|
+| `standby` | IDLE |
+| `printing` | PRINTING |
+| `paused` | PAUSED |
+| `complete` | FINISHED |
+| `error` | ERROR |
+| `cancelled` | STOPPED |
+
+**No API key required** — Moonraker on LAN has auth disabled by default. Klipper is added to `NO_API_KEY_TYPES` in `printers.js`; the API key field is hidden in the Settings UI.
+
+### Changes
+
+**`server/drivers/klipper.js`** — new file
+**`server/drivers/index.js`** — registered `'klipper'` in LOADERS
+**`server/routes/printers.js`** — renamed `ELEGOO_TYPES` → `NO_API_KEY_TYPES`; added `'klipper'`
+**`client/src/pages/Settings.jsx`** — added Klipper to `CONNECTOR_OPTIONS`/`CONNECTOR_LABEL`; API key field hidden for `NO_API_KEY_TYPES`; Voron_01 name placeholder
+**`docs/multi-brand.md`** — updated connector families table and phase status
+
+---
+
 ## 2026-04-13 — Ceiling check: SUM(parts_per_plate) instead of COUNT(jobs)
 
 The dispatch ceiling check now sums `parts_per_plate` across all active jobs for a part rather than counting jobs. The old COUNT approach used the *current dispatch's* `parts_per_plate` to compute `jobsRemaining`, which gave the wrong ceiling when a part's G-codes have different `parts_per_plate` on different printer models (e.g. XL=4ppp, MK4S=10ppp). In that case the ceiling was inflated — the scheduler would dispatch more printers than needed and significantly overshoot the target quantity.

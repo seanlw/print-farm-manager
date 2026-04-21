@@ -1,6 +1,6 @@
 # Multi-Brand Printer Support
 
-> **Phase 6B finalized (2026-04-08).** Elegoo SDCP connector complete — covers Centauri Carbon and Centauri Carbon 2. Both Prusa Link and Elegoo SDCP are fully supported.
+> **Phase 6C added (2026-04-20).** Klipper (Moonraker) connector complete — covers Voron and all Klipper-firmware printers. Prusa Link, Elegoo SDCP, Bambu, and Klipper are all fully supported.
 
 ## Overview
 
@@ -55,8 +55,9 @@ Each connector family covers all printer models that share the same protocol:
 |---|---|---|
 | **Prusa Link** | PrusaLink REST API (HTTP polling) | MK4, XL, and any future Prusa models |
 | **Elegoo SDCP** | SDCP WebSocket V3.0.0 (port 3030) | Centauri Carbon, Centauri Carbon 2 |
+| **Klipper (Moonraker)** | Moonraker REST API (HTTP polling, port 7125) | Voron and any Klipper-firmware printer |
 
-The `printer.type` DB column stores the connector identifier (`prusa` or `elegoo-centauri`). The model column (`centauri-carbon`, etc.) is used only for display grouping in the UI.
+The `printer.type` DB column stores the connector identifier (`prusa`, `elegoo-centauri`, `bambu`, or `klipper`). The model column (`centauri-carbon`, etc.) is used only for display grouping in the UI.
 
 ---
 
@@ -91,6 +92,7 @@ The driver registry (`server/drivers/index.js`) maps `printer.type → driver mo
 | `server/drivers/index.js` | Driver registry — maps type string to module | **Done** |
 | `server/drivers/prusa.js` | Extracts existing PrusaLink logic from poller.js / scheduler.js | **Done** |
 | `server/drivers/elegoo-centauri.js` | New SDCP WebSocket implementation | **Done** |
+| `server/drivers/klipper.js` | Moonraker REST API implementation | **Done** |
 
 ---
 

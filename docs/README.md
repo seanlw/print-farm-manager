@@ -76,5 +76,6 @@ print-farm-manager/
 | 5 | Deferred | Mobile-responsive polish — Fleet UI already works on iPhone; no immediate need |
 | 6A | Complete | Driver abstraction layer — Prusa extracted into `server/drivers/prusa.js`; registry wired |
 | 6B | Complete | Elegoo Centauri Carbon SDCP driver via `sdcp` package; UI and route changes for non-Prusa brands |
+| 6C | Complete | Klipper (Moonraker) driver — Voron and all Klipper-firmware printers via plain HTTP on port 7125 |
 
 See [ARCHITECTURE.md](../ARCHITECTURE.md) for full product spec.

@@ -3,7 +3,7 @@
 //
 // Moonraker is the standard API layer for Klipper firmware (Voron, etc.).
 // All communication is plain HTTP — no persistent connection, no auth required on LAN.
-// Upload is two steps: POST multipart file, then POST print/start.
+// Upload: POST multipart to /server/files/upload with print=true — starts immediately.
 
 const axios = require('axios');
 const fs = require('fs');
@@ -12,7 +12,9 @@ const FormData = require('form-data');
 const PORT = 7125;
 
 function base(printer) {
-  return `http://${printer.ip}:${PORT}`;
+  // Strip any accidental protocol prefix or trailing slashes — field expects bare IP.
+  const ip = printer.ip.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  return `http://${ip}:${PORT}`;
 }
 
 // ─── Status ─────────────────────────────────────────────────────────────────
@@ -32,7 +34,7 @@ async function getStatus(printer) {
     const res = await axios.get(
       `${base(printer)}/printer/objects/query`,
       {
-        params: { print_stats: null, virtual_sdcard: null, webhooks: null },
+        params: { print_stats: '', virtual_sdcard: '', webhooks: '' },
         timeout: 8000,
       }
     );
@@ -83,27 +85,16 @@ async function getStatus(printer) {
 async function uploadAndPrint(printer, gcodeFullPath, filename) {
   const form = new FormData();
   form.append('file', fs.createReadStream(gcodeFullPath), { filename });
+  form.append('print', 'true'); // must be a form field, not a query param
 
   await axios.post(
-    `${base(printer)}/server/files/gcodes/`,
+    `${base(printer)}/server/files/upload`,
     form,
     {
       headers: form.getHeaders(),
       timeout: 300000, // 5 minutes for large files
       maxContentLength: Infinity,
       maxBodyLength: Infinity,
-    }
-  );
-
-  // Small delay — Moonraker needs a moment to register the file before print/start.
-  await new Promise(r => setTimeout(r, 1000));
-
-  await axios.post(
-    `${base(printer)}/printer/print/start`,
-    null,
-    {
-      params: { filename },
-      timeout: 15000,
     }
   );
 }

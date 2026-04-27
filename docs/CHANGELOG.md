@@ -2,6 +2,26 @@
 
 ---
 
+## 2026-04-27 — Klipper driver bug fixes (validated on Voron hardware)
+
+Three bugs found and fixed while testing the Phase 6C Klipper driver against a real Voron printer.
+
+**`VALID_CONNECTORS` missing `klipper`** — `server/routes/models.js` validated connector against `['prusa', 'elegoo-centauri', 'bambu']`, blocking addition of any Klipper printer model. Added `'klipper'` to the list.
+
+**Moonraker params sent as null → empty `status` response** — axios drops `null`-valued params from the query string, so `/printer/objects/query` received no object names and returned `status: {}`. `print_stats.state` was `undefined`, mapping to `UNKNOWN`. Fixed by passing `''` instead of `null` so the keys appear in the query string.
+
+**`print=true` passed as query param instead of form field** — Moonraker's `/server/files/upload` silently ignores query params; `print` must be a multipart form field. Upload succeeded (HTTP 200) but the print never started. Fixed by replacing `params: { print: 'true' }` with `form.append('print', 'true')`.
+
+**IP stripping** — defensive: `base()` now strips any `http://` prefix and trailing slashes from the stored IP before building the Moonraker URL.
+
+### Changes
+
+**`server/routes/models.js`** — added `'klipper'` to `VALID_CONNECTORS`
+**`server/drivers/klipper.js`** — IP stripping in `base()`; empty-string params for Moonraker query; `print` as form field in `uploadAndPrint`
+**`server/tests/klipper-driver.test.js`** — new file, 19 tests covering all state mappings, upload correctness, IP stripping, and `print` form-field placement
+
+---
+
 ## 2026-04-26 — Fleet card UX improvements
 
 Four targeted improvements to the printer card in the Fleet view to reduce accidental taps.

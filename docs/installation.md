@@ -42,11 +42,26 @@ npm --version
 `better-sqlite3` compiles a native binary during `npm install`. Each platform needs the right build tools available or the install will fail.
 
 **Windows**
-Run the following in an **Administrator** Command Prompt, then proceed with installation:
-```
-npm install --global windows-build-tools
-```
-> If `npm install` succeeds without this step, you can skip it — some Node.js installers bundle the required tools automatically.
+`better-sqlite3` requires a C++ compiler. The easiest way to get one is during the Node.js install itself:
+
+When running the Node.js installer, you will see a screen titled **"Tools for Native Modules"**. Check the box labelled **"Automatically install the necessary tools"** and complete the installer. A separate PowerShell window will open after Node finishes and install Python and Visual Studio Build Tools — let it run to completion.
+
+If you already installed Node.js without checking that box, install the build tools manually:
+
+1. Install **Visual Studio Build Tools 2022** (free). The fastest way is with Windows Package Manager — run this in an Administrator PowerShell:
+   ```
+   winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --quiet"
+   ```
+   Alternatively, download the installer from [https://visualstudio.microsoft.com/downloads/](https://visualstudio.microsoft.com/downloads/) (scroll to "Tools for Visual Studio" → "Build Tools for Visual Studio 2022") and select the **"Desktop development with C++"** workload.
+
+2. Install Python 3 from [https://python.org/downloads/](https://python.org/downloads/).
+
+3. Open a new **Administrator** Command Prompt and run:
+   ```
+   npm install -g node-gyp
+   ```
+
+> **Note:** The old `npm install --global windows-build-tools` command is deprecated and broken on modern Node.js — do not use it.
 
 **macOS**
 Install the Xcode Command Line Tools. Run in Terminal and follow the on-screen prompt:
@@ -402,10 +417,15 @@ Restart your machine. The PATH change from the installer requires a full restart
 
 **`npm install` fails with a native build error**
 
-*Windows* — install Windows Build Tools in an Administrator Command Prompt:
+*Windows* — install Visual Studio Build Tools 2022. Run this in an Administrator PowerShell:
 ```
-npm install --global windows-build-tools
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --quiet"
 ```
+Then install `node-gyp` in a new Administrator Command Prompt:
+```
+npm install -g node-gyp
+```
+> Do not use `npm install --global windows-build-tools` — it is deprecated and fails on modern Node.js.
 
 *macOS* — install Xcode Command Line Tools:
 ```

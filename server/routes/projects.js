@@ -1,5 +1,9 @@
 const express = require('express');
-const router = express.Router();
+const path    = require('path');
+const fs      = require('fs');
+const router  = express.Router();
+
+const GCODE_DIR = path.join(__dirname, '..', 'gcode');
 
 // scheduler is optional — only needed at runtime for sweepIdlePrinters on reactivate.
 // Tests pass null so there is no live scheduler dependency.
@@ -126,6 +130,78 @@ module.exports = (db, scheduler = null) => {
       project: db.prepare('SELECT * FROM projects WHERE id = ?').get(project.id),
       reopened_parts: eligible.length,
     });
+  });
+
+  // POST /:id/duplicate — create a new draft project copied from an existing one.
+  // Body: { name?: string } — defaults to "Copy of <source name>".
+  // All parts are copied with completed_qty reset to 0 and status reset to open.
+  // Each part's G-code files are physically copied to new unique filenames so the
+  // two projects are fully independent — deleting one won't affect the other.
+  router.post('/:id/duplicate', (req, res) => {
+    const source = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
+    if (!source) return res.status(404).json({ error: 'Project not found' });
+
+    const name = (req.body.name || '').trim() || `Copy of ${source.name}`;
+    const now  = Date.now();
+
+    const sourceParts = db
+      .prepare('SELECT * FROM parts WHERE project_id = ? ORDER BY sort_order ASC, created_at ASC')
+      .all(source.id);
+
+    let newProject;
+    let copiedParts  = 0;
+    let copiedGcodes = 0;
+
+    db.transaction(() => {
+      const projResult = db.prepare(`
+        INSERT INTO projects (name, description, status, priority, created_at, updated_at)
+        VALUES (?, ?, 'draft', 0, ?, ?)
+      `).run(name, source.description ?? null, now, now);
+      newProject = db.prepare('SELECT * FROM projects WHERE id = ?').get(projResult.lastInsertRowid);
+
+      for (const part of sourceParts) {
+        const partResult = db.prepare(`
+          INSERT INTO parts (project_id, name, target_qty, completed_qty, status, sort_order,
+                             print_time_seconds, material_grams, created_at, updated_at)
+          VALUES (?, ?, ?, 0, 'open', ?, ?, ?, ?, ?)
+        `).run(
+          newProject.id, part.name, part.target_qty, part.sort_order,
+          part.print_time_seconds ?? null, part.material_grams ?? null, now, now
+        );
+        copiedParts++;
+
+        const gcodes = db.prepare('SELECT * FROM gcodes WHERE part_id = ?').all(part.id);
+        for (const gcode of gcodes) {
+          const srcBasename = gcode.filepath.split(/[\\/]/).pop();
+          const srcPath     = path.join(GCODE_DIR, srcBasename);
+          const newBasename = `${now}_dup${gcode.id}_${gcode.filename}`;
+          let   newFilepath = newBasename;
+
+          if (fs.existsSync(srcPath)) {
+            try {
+              fs.copyFileSync(srcPath, path.join(GCODE_DIR, newBasename));
+            } catch (_) {
+              newFilepath = gcode.filepath; // fallback: keep original path reference
+            }
+          } else {
+            newFilepath = gcode.filepath; // source file missing — preserve metadata only
+          }
+
+          db.prepare(`
+            INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate,
+                                est_print_secs, material_grams, ams_slot, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            partResult.lastInsertRowid, gcode.printer_model, gcode.filename, newFilepath,
+            gcode.parts_per_plate, gcode.est_print_secs ?? null, gcode.material_grams ?? null,
+            gcode.ams_slot ?? null, now
+          );
+          copiedGcodes++;
+        }
+      }
+    })();
+
+    res.status(201).json({ project: newProject, copied_parts: copiedParts, copied_gcodes: copiedGcodes });
   });
 
   return router;

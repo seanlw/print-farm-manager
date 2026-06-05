@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useToast } from '../useToast';
 import { useConfirm } from '../useConfirm';
 
@@ -627,6 +628,10 @@ export default function Projects() {
   // Tracks Escape press on project rename so onBlur doesn't trigger a save after cancelling
   const renameEscapedRef = useRef(false);
 
+  // Duplicate modal
+  const [dupModal, setDupModal] = useState(null); // null | { id }
+  const [dupName,  setDupName]  = useState('');
+
   const fetchProjects = useCallback(async () => {
     try {
       const res = await fetch('/api/projects');
@@ -690,6 +695,23 @@ export default function Projects() {
       await fetchProjects();
       showToast('Project created');
     }
+  }
+
+  async function handleDuplicate() {
+    if (!dupName.trim()) return;
+    const res = await fetch(`/api/projects/${dupModal.id}/duplicate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: dupName.trim() }),
+    });
+    if (!res.ok) {
+      const d = await res.json();
+      showToast(d.error || 'Duplicate failed.', 'error');
+      return;
+    }
+    setDupModal(null);
+    await fetchProjects();
+    showToast('Project duplicated');
   }
 
   async function handleStatusTransition(action) {
@@ -826,6 +848,72 @@ export default function Projects() {
       <div>
         {toastEl}
         {confirmModal}
+
+        {/* ── Duplicate project modal ── */}
+        {dupModal && createPortal(
+          <div
+            style={{
+              position: 'fixed', inset: 0,
+              background: 'rgba(0,0,0,0.65)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              zIndex: 1000, padding: 20,
+              backdropFilter: 'blur(3px)',
+            }}
+            onClick={() => setDupModal(null)}
+          >
+            <div
+              style={{
+                background: '#1e2433', border: '1px solid #334155', borderRadius: 10,
+                padding: '24px 28px', maxWidth: 420, width: '100%',
+                boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
+              }}
+              onClick={e => e.stopPropagation()}
+            >
+              <div style={{ fontSize: 16, fontWeight: 700, color: '#e2e8f0', marginBottom: 6 }}>
+                Duplicate Project
+              </div>
+              <div style={{ color: '#64748b', fontSize: 13, marginBottom: 14 }}>
+                All parts and G-code files will be copied. The new project starts as a draft with all quantities reset to zero.
+              </div>
+              <label style={{ color: '#94a3b8', fontSize: 12, display: 'block', marginBottom: 6 }}>
+                New project name
+              </label>
+              <input
+                type="text"
+                value={dupName}
+                onChange={e => setDupName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleDuplicate(); if (e.key === 'Escape') setDupModal(null); }}
+                style={{ ...inputSx, width: '100%', boxSizing: 'border-box', marginBottom: 20 }}
+                autoFocus
+              />
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button
+                  onClick={() => setDupModal(null)}
+                  style={{
+                    background: '#1f2937', color: '#9ca3af', border: '1px solid #374151',
+                    borderRadius: 6, padding: '8px 18px', fontSize: 13, cursor: 'pointer', fontWeight: 500,
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDuplicate}
+                  disabled={!dupName.trim()}
+                  style={{
+                    background: '#1d4ed8', color: '#fff', border: 'none',
+                    borderRadius: 6, padding: '8px 18px', fontSize: 13, fontWeight: 600,
+                    cursor: dupName.trim() ? 'pointer' : 'default',
+                    opacity: dupName.trim() ? 1 : 0.5,
+                  }}
+                >
+                  Duplicate
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <h1 style={{ fontSize: 22, fontWeight: 700 }}>Projects</h1>
           <button
@@ -924,6 +1012,22 @@ export default function Projects() {
                   {p.description && (
                     <div style={{ color: '#64748b', fontSize: 12 }}>{p.description}</div>
                   )}
+                </div>
+
+                {/* Duplicate button — stop propagation so it doesn't navigate into the project */}
+                <div style={{ flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+                  <button
+                    onClick={() => { setDupModal({ id: p.id }); setDupName(`Copy of ${p.name}`); }}
+                    title="Duplicate project"
+                    style={{
+                      background: 'none', border: '1px solid #334155', borderRadius: 4,
+                      padding: '3px 8px', color: '#64748b', fontSize: 12, cursor: 'pointer', lineHeight: 1.4,
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.color = '#e2e8f0'; e.currentTarget.style.borderColor = '#475569'; }}
+                    onMouseLeave={e => { e.currentTarget.style.color = '#64748b'; e.currentTarget.style.borderColor = '#334155'; }}
+                  >
+                    Copy
+                  </button>
                 </div>
 
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexShrink: 0, cursor: 'pointer' }} onClick={() => setSelectedId(p.id)}>

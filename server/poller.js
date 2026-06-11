@@ -69,11 +69,18 @@ class PrinterPoller extends EventEmitter {
 
     if (newStatus !== previousStatus) {
       // States considered "in-progress normal" — no hold on entry.
-      // Everything else (ERROR, OFFLINE, ATTENTION, PAUSED, UNKNOWN, any unexpected state)
-      // sets is_held = 1 so a human must confirm before the next job dispatches.
+      // FINISHED and missed-finish (PRINTING→IDLE) always hold.
+      // Other non-safe states (OFFLINE, ERROR, PAUSED, etc.) only hold when there is a
+      // tracked active job — the purpose of the hold is to protect an in-flight job.
+      // Without this gate a recommissioned printer that briefly goes OFFLINE during boot
+      // gets re-held, and the Fleet UI shows stale confirmation buttons after it recovers.
       const SAFE_STATES = new Set(['IDLE', 'PRINTING', 'FINISHED', 'READY']);
       const missedFinished = newStatus === 'IDLE' && previousStatus === 'PRINTING';
-      const shouldHold = newStatus === 'FINISHED' || missedFinished || !SAFE_STATES.has(newStatus);
+      const needsActiveJobCheck = !SAFE_STATES.has(newStatus) && !missedFinished;
+      const hasActiveJob = needsActiveJobCheck
+        ? !!this.db.prepare("SELECT id FROM jobs WHERE printer_id = ? AND status IN ('uploading', 'printing') LIMIT 1").get(printer.id)
+        : false;
+      const shouldHold = newStatus === 'FINISHED' || missedFinished || (!SAFE_STATES.has(newStatus) && hasActiveJob);
       const holdUpdate = shouldHold ? ', is_held = 1' : '';
       // Clear job fields when leaving PRINTING state
       const clearJob = previousStatus === 'PRINTING' && newStatus !== 'PRINTING'

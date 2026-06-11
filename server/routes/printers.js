@@ -210,7 +210,7 @@ module.exports = (db) => {
     }
     // Normal case: job already in 'finished' status was credited by _handleFinished — nothing to undo or re-credit.
 
-    db.prepare('UPDATE printers SET is_active = 0, decommissioned_at = ? WHERE id = ?').run(now, printer.id);
+    db.prepare('UPDATE printers SET is_active = 0, is_held = 0, decommissioned_at = ? WHERE id = ?').run(now, printer.id);
     events.insert(printer.id, 'decommission', req.body?.note ?? 'operator confirmed successful print — taken offline for maintenance');
     console.log(`[printers] ${printer.name} decommissioned after confirmed good print`);
     res.json(db.prepare('SELECT * FROM printers WHERE id = ?').get(printer.id));

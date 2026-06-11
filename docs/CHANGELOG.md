@@ -2,6 +2,24 @@
 
 ---
 
+## 2026-06-11 — Fix spurious confirmation buttons after recommission
+
+### Bug: Fleet showed green/red job-confirm buttons on a printer whose job was already confirmed at decommission time
+
+Two bugs combined to cause this:
+
+**Bug 1 — `complete-and-decommission` left `is_held = 1`:** When an operator decommissions a printer via "Print succeeded — credit & decommission", the handler set `is_active = 0` but did not clear `is_held`. The flag was cleaned up by the recommission handler, but left the decommissioned record in a dirty state.
+
+**Bug 2 — poller re-held on OFFLINE transition after recommission (root cause):** The poller unconditionally set `is_held = 1` on any transition to a non-safe state (OFFLINE, ERROR, PAUSED, etc.). After recommission the printer briefly appears OFFLINE while the new logic board boots. The poller caught this transition, set `is_held = 1`, and when the printer recovered to IDLE there was nothing to clear the hold. Fleet then showed the green/red confirmation buttons against the already-confirmed job.
+
+**Fix:** The poller now only holds on non-safe state transitions when there is a tracked active job (`uploading` or `printing`). The hold exists to protect in-flight jobs — without one, there is nothing for the operator to confirm. `complete-and-decommission` also now clears `is_held = 0` alongside `is_active = 0`.
+
+### Changes
+- `server/routes/printers.js`: `complete-and-decommission` now sets `is_held = 0` when writing `is_active = 0`.
+- `server/poller.js`: non-SAFE state transitions (OFFLINE, ERROR, PAUSED, etc.) only set `is_held = 1` when an active `uploading`/`printing` job exists for the printer.
+
+---
+
 ## 2026-06-11 — Edit printer details (IP, API key, group, serial, model)
 
 ### Feature: inline edit form for all printer connection fields

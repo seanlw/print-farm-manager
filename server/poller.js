@@ -78,9 +78,9 @@ class PrinterPoller extends EventEmitter {
       // a network blip causes FINISHED→OFFLINE→FINISHED, the FINISHED re-entry sets
       // is_held=1, and Fleet shows stale confirmation buttons for the already-confirmed job.
       //
-      // _handleFinished and _handlePrinterUnavailable in the scheduler also set is_held=1
-      // when they find an active job, so this gate is not needed there — they do their
-      // own job lookup before holding.
+      // _handleFinished, _handlePrinterOffline, and _handlePrinterUnavailable in the
+      // scheduler also set is_held=1 only when they find an active job — they do their
+      // own job lookup before holding, so this gate is not needed there.
       const SAFE_STATES = new Set(['IDLE', 'PRINTING', 'FINISHED', 'READY']);
       const missedFinished = newStatus === 'IDLE' && previousStatus === 'PRINTING';
       const hasActiveJob = !!this.db.prepare(

@@ -510,13 +510,12 @@ class JobScheduler extends EventEmitter {
       "SELECT id FROM jobs WHERE printer_id = ? AND status IN ('uploading', 'printing') LIMIT 1"
     ).get(printer.id);
 
-    this.db.prepare('UPDATE printers SET is_held = 1 WHERE id = ?').run(printer.id);
-
     if (activeJob) {
+      this.db.prepare('UPDATE printers SET is_held = 1 WHERE id = ?').run(printer.id);
       events.insert(printer.id, 'offline_with_job', `Printer went offline with job ${activeJob.id} in progress — awaiting operator confirmation`);
       console.warn(`[scheduler] ${printer.name} went OFFLINE with active job — held for operator review (job left as printing)`);
     } else {
-      console.warn(`[scheduler] ${printer.name} went OFFLINE (no active job) — held`);
+      console.warn(`[scheduler] ${printer.name} went OFFLINE (no active job) — not held`);
     }
   }
 

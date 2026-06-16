@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-06-16 — Fix: OFFLINE with no active job incorrectly held printers
+
+### Bug: printers stuck held after going offline from a confirmed-finished state
+
+When an operator confirmed a finished print (green button, no more jobs to dispatch) and the printer subsequently went OFFLINE (e.g. firmware upgrade), `_handlePrinterOffline` in the scheduler unconditionally set `is_held = 1` even though there was no active job to protect. When the printer came back IDLE and dispatch was attempted, it found `is_held = 1` and skipped — leaving the printer with stale green/red confirmation buttons and no way to self-resolve.
+
+The poller had already been fixed (2026-06-11) to gate its own hold triggers on active-job presence, but `_handlePrinterOffline` in the scheduler was missed — it held unconditionally regardless of job state.
+
+**Fix:** `_handlePrinterOffline` now only sets `is_held = 1` and logs the operator-review event when an active (`uploading` or `printing`) job exists. Without one, the printer simply transitions OFFLINE → IDLE and resumes normal dispatch.
+
+### Changes
+- `server/scheduler.js`: `_handlePrinterOffline` gates `is_held = 1` on active-job presence, matching the pattern already used by `_handleFinished` and `_handlePrinterUnavailable`.
+- `server/poller.js`: updated comment to reflect that all three scheduler offline/unavailable handlers now do their own job lookup before holding.
+
+---
+
 ## 2026-06-11 — Fix spurious confirmation buttons after recommission
 
 ### Bug: Fleet showed green/red job-confirm buttons on a printer whose job was already confirmed at decommission time

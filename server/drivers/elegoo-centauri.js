@@ -31,18 +31,15 @@ async function getConnection(printer) {
   client.AutoReconnect = 5000; // reconnect every 5s on drop
 
   client.on('disconnected', () => {
-    console.log(`[elegoo] ${printer.name} disconnected`);
+    if (process.env.DEBUG_ELEGOO) console.log(`[elegoo] ${printer.name} disconnected`);
   });
 
   client.on('reconnected', () => {
-    console.log(`[elegoo] ${printer.name} reconnected`);
+    if (process.env.DEBUG_ELEGOO) console.log(`[elegoo] ${printer.name} reconnected`);
   });
 
   client.on('error', (err) => {
-    // Suppress noisy socket errors from console — reconnect handles them
-    if (process.env.DEBUG_ELEGOO) {
-      console.warn(`[elegoo] ${printer.name} error:`, err?.message || err);
-    }
+    if (process.env.DEBUG_ELEGOO) console.warn(`[elegoo] ${printer.name} error:`, err?.message || err);
   });
 
   await client.Connect(printer.ip);

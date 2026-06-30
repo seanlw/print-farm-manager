@@ -26,6 +26,9 @@
 const mqtt     = require('mqtt');
 const ftp      = require('basic-ftp');
 const path     = require('path');
+const fs       = require('fs');
+const os       = require('os');
+const JSZip    = require('jszip');
 
 // Map of printer.id → { client, latestPrint, connected }
 const connections = new Map();
@@ -225,10 +228,30 @@ async function uploadAndPrint(printer, gcodeFullPath, _filename, options = {}) {
   const ext = path.extname(onPrinterFilename).toLowerCase();
   const is3mf = ext === '.3mf';
 
+  // For plain .gcode/.bgcode files: Bambu's gcode_file MQTT command is non-functional
+  // on A-series printers (A1, A2, A2L). project_file works, but requires a .3mf
+  // container. Wrap the gcode in a minimal .3mf (ZIP with gcode at
+  // Metadata/plate_1.gcode) so we can use project_file for all file types.
+  let uploadPath   = gcodeFullPath;   // path on disk to upload
+  let onPrinterName = onPrinterFilename; // filename as it will appear on the SD card
+  let tempPath     = null;             // set if we created a temp file to clean up
+
+  if (!is3mf) {
+    const zip = new JSZip();
+    zip.file('Metadata/plate_1.gcode', fs.readFileSync(gcodeFullPath));
+    const zipBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+
+    const baseName = path.basename(onPrinterFilename, ext);
+    onPrinterName = `${baseName}.3mf`;
+    tempPath      = path.join(os.tmpdir(), onPrinterName);
+    fs.writeFileSync(tempPath, zipBuffer);
+    uploadPath = tempPath;
+    console.log(`[bambu] Wrapped ${onPrinterFilename} → ${onPrinterName} (minimal .3mf)`);
+  }
+
   // ── FTPS upload ──────────────────────────────────────────────────────────
-  // FTP root = SD card root (/sdcard/).
-  // .3mf files go in the SD card root; .gcode/.bgcode go in gcodes/ subdir.
-  console.log(`[bambu] Uploading ${onPrinterFilename} to ${printer.name} via FTPS…`);
+  // All files (native .3mf and gcode-wrapped .3mf) go to the SD card root.
+  console.log(`[bambu] Uploading ${onPrinterName} to ${printer.name} via FTPS…`);
 
   const ftpClient = new ftp.Client();
   ftpClient.ftp.verbose = !!process.env.DEBUG_BAMBU;
@@ -238,23 +261,18 @@ async function uploadAndPrint(printer, gcodeFullPath, _filename, options = {}) {
       host:    printer.ip,
       port:    990,
       user:    'bblp',
-      password: printer.api_key, // access code doubles as FTP password
-      secure:  'implicit',       // Bambu uses implicit TLS on port 990, not STARTTLS
-      secureOptions: {
-        rejectUnauthorized: false, // printer uses a self-signed certificate — intentional
-      },
+      password: printer.api_key,
+      secure:  'implicit',
+      secureOptions: { rejectUnauthorized: false },
     });
 
-    if (is3mf) {
-      await ftpClient.uploadFrom(gcodeFullPath, onPrinterFilename);
-    } else {
-      // Bambu expects gcode files in the gcodes/ subdirectory on the SD card.
-      // gcodes/ always exists on Bambu printers — upload directly with the path.
-      await ftpClient.uploadFrom(gcodeFullPath, `gcodes/${onPrinterFilename}`);
-    }
+    await ftpClient.uploadFrom(uploadPath, onPrinterName);
     console.log(`[bambu] Upload complete on ${printer.name}`);
   } finally {
     ftpClient.close();
+    if (tempPath) {
+      try { fs.unlinkSync(tempPath); } catch (_) {}
+    }
   }
 
   // ── MQTT print trigger ───────────────────────────────────────────────────
@@ -264,50 +282,33 @@ async function uploadAndPrint(printer, gcodeFullPath, _filename, options = {}) {
     throw new Error(`Bambu printer ${printer.name} MQTT not connected — cannot trigger print`);
   }
 
-  let printPayload;
-
-  if (is3mf) {
-    // .3mf files use project_file command.
-    // url uses ftp:/// to reference a file on the printer's own SD card.
-    // amsSlot drives whether to use AMS (0–N) or external spool (-1 / null).
-    //
-    // ams_mapping format for LAN printing: a flat array where index = filament slot
-    // in the .3mf (0-based) and value = physical AMS tray ID (0-15).
-    // For single-color prints: [amsSlot] (one element).
-    // For external spool or no AMS: [] (empty — printer uses embedded .3mf settings).
-    // Ref: https://github.com/Doridian/OpenBambuAPI (issue #38 + mqtt.md)
-    const subtaskName = path.basename(onPrinterFilename, '.3mf');
-    const useAms      = amsSlot != null && amsSlot >= 0;
-    printPayload = {
-      sequence_id:     '0',
-      command:         'project_file',
-      param:           'Metadata/plate_1.gcode',
-      subtask_name:    subtaskName,
-      url:             `ftp:///${onPrinterFilename}`,
-      bed_type:        'auto',
-      timelapse:       false,
-      bed_leveling:    true,
-      flow_cali:       false,
-      vibration_cali:  true,
-      layer_inspect:   false,
-      use_ams:         useAms,
-      ams_mapping:     useAms ? [amsSlot] : [],
-      profile_id:      '0',
-      project_id:      '0',
-      subtask_id:      '0',
-      task_id:         '0',
-    };
-    console.log(`[bambu] Print triggered on ${printer.name}: ${onPrinterFilename} (project_file)`);
-  } else {
-    // .gcode/.bgcode — gcode_file command, file lives in gcodes/ subdir.
-    // param is the filename only — the printer resolves it relative to gcodes/ automatically.
-    printPayload = {
-      sequence_id: '0',
-      command:     'gcode_file',
-      param:       onPrinterFilename,
-    };
-    console.log(`[bambu] Print triggered on ${printer.name}: gcodes/${onPrinterFilename}`);
-  }
+  // All files use project_file — native .3mf and gcode-wrapped .3mf alike.
+  // ams_mapping format for LAN printing: a flat array where index = filament slot
+  // in the .3mf (0-based) and value = physical AMS tray ID (0-15).
+  // For single-color prints: [amsSlot] (one element).
+  // For external spool or no AMS: [] (empty).
+  // Ref: https://github.com/Doridian/OpenBambuAPI (issue #38 + mqtt.md)
+  const subtaskName = path.basename(onPrinterName, '.3mf');
+  const useAms      = amsSlot != null && amsSlot >= 0;
+  const printPayload = {
+    sequence_id:     '0',
+    command:         'project_file',
+    param:           'Metadata/plate_1.gcode',
+    subtask_name:    subtaskName,
+    url:             `ftp:///${onPrinterName}`,
+    bed_type:        'auto',
+    timelapse:       false,
+    bed_leveling:    true,
+    flow_cali:       false,
+    vibration_cali:  true,
+    layer_inspect:   false,
+    use_ams:         useAms,
+    ams_mapping:     useAms ? [amsSlot] : [],
+    profile_id:      '0',
+    project_id:      '0',
+    subtask_id:      '0',
+    task_id:         '0',
+  };
 
   const mqttPayload = JSON.stringify({ print: printPayload });
   console.log(`[bambu] MQTT payload → ${printer.name}: ${mqttPayload}`);
@@ -324,9 +325,11 @@ async function uploadAndPrint(printer, gcodeFullPath, _filename, options = {}) {
 async function deleteFile(printer, filename) {
   if (!filename) return;
 
+  // .gcode/.bgcode files were wrapped in a .3mf and uploaded to SD root.
+  // Delete the .3mf wrapper, not the original gcode path.
   const ext = path.extname(filename).toLowerCase();
   const remotePath = (ext === '.gcode' || ext === '.bgcode')
-    ? `gcodes/${filename}`
+    ? `${path.basename(filename, ext)}.3mf`
     : filename;
 
   const ftpClient = new ftp.Client();

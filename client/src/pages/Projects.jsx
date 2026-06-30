@@ -203,10 +203,14 @@ function GcodeUploadPanel({ part, onUploaded, filamentTypes, filamentColors, pro
     );
   }
 
+  const isBambuModel = !!modelOptions.find(m => m.model_id === model && m.connector === 'bambu');
+  const bambuNeedsThreemf = isBambuModel && file && !file.name.toLowerCase().endsWith('.3mf');
+
   async function handleUpload() {
-    if (!file)           { setError('Choose a file first.'); return; }
-    if (!partsPerPlate)  { setError('Enter parts per plate.'); return; }
-    if (!model)          { setError('Select a printer model.'); return; }
+    if (!file)              { setError('Choose a file first.'); return; }
+    if (bambuNeedsThreemf)  { setError('Bambu printers require a .3mf file.'); return; }
+    if (!partsPerPlate)     { setError('Enter parts per plate.'); return; }
+    if (!model)             { setError('Select a printer model.'); return; }
     if (amsSlots.length > 0 && amsSlot === '') {
       setError('Select an AMS slot or External Spool.'); return;
     }
@@ -293,17 +297,23 @@ function GcodeUploadPanel({ part, onUploaded, filamentTypes, filamentColors, pro
         )}
         <button
           onClick={handleUpload}
-          disabled={uploading}
+          disabled={uploading || bambuNeedsThreemf}
           style={{
             background: '#1d4ed8', color: '#fff', border: 'none', borderRadius: 4,
             padding: '5px 14px', fontSize: 12, fontWeight: 600,
-            cursor: uploading ? 'not-allowed' : 'pointer',
-            opacity: uploading ? 0.7 : 1,
+            cursor: (uploading || bambuNeedsThreemf) ? 'not-allowed' : 'pointer',
+            opacity: (uploading || bambuNeedsThreemf) ? 0.5 : 1,
           }}
         >
           {uploading ? 'Uploading…' : 'Upload'}
         </button>
       </div>
+
+      {bambuNeedsThreemf && (
+        <p style={{ margin: 0, fontSize: 12, color: '#b45309', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 4, padding: '5px 10px' }}>
+          Bambu printers require a <strong>.3mf</strong> file exported from Bambu Studio or Orca Slicer — plain .gcode files are not supported.
+        </p>
+      )}
 
       {/* Targeting — material, color, groups */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>

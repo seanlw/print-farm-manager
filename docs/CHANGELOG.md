@@ -2,6 +2,43 @@
 
 ---
 
+## 2026-07-01 — UX pass for first-time users (pre-release)
+
+Full UI/UX review and improvement pass ahead of the open-source release, focused on the shift from "author who built it" to "stranger installing it fresh." Verified against the demo seed with screenshots at desktop and mobile widths; all 348 tests pass.
+
+### Fixed
+- `client/src/pages/Settings.jsx`: **crash bug** — the CSV flagged-row resolution dropdown referenced an undefined `MODEL_OPTIONS`, crashing the Settings page whenever an import produced flagged rows. Now derives options from the models table (`allModels`), and the fallback model is the first registered model instead of a hardcoded `mk4s`.
+- `client/src/pages/Fleet.jsx`: `Set Ready` / batch Set Ready failures were silent — now surface an error toast with the server message.
+- `client/src/pages/Dashboard.jsx`: per-model count chips rendered truncated words ("1 PRIN", "1 ERRO") via `s.slice(0,4)` — now full status words.
+
+### First-run experience
+- Settings sections reordered to match setup order: Printer Models → Filament Library → Add Printer → CSV Import → rest. Previously Add Printer appeared before the Models section it depends on.
+- Add Printer form: per-brand credential help box (where to find PrusaLink API key, Bambu LAN access code/serial, Elegoo/Klipper no key) + inline hint when the selected brand has no models yet.
+- New `client/src/components/EmptyState.jsx` — friendly empty-state card with optional action link. Applied to Fleet, Dashboard, Projects (teaches the Project → Parts → G-code → Jobs model), Jobs (distinguishes "no jobs yet" from "filters match nothing"), and PrinterDetail events.
+- Jargon pass: tooltips on Set Ready, Bad Print, Sweep for Jobs, Link Job, and the Awaiting stat; renamed Fleet `Prepared` → `Ready`, Dashboard `Awaiting` → `Awaiting Sign-off`, part status `Closed` → `Complete`.
+- G-code upload form: labeled fields with required markers, parts-per-plate tooltip, filename-convention tip, and a tooltip explaining Targeting.
+
+### New
+- **Dispatch diagnostic**: `GET /api/parts/:id/dispatch-status` mirrors the scheduler's eligibility rules; "Why isn't this printing?" button in the part details panel shows blockers (project inactive, part complete, no G-code, coverage) and per-G-code availability (model/group/material matches, busy/held printers).
+- **Farm name setting**: `farm_name` key (Settings → Farm Name) replaces the hardcoded "3DPN" sidebar branding; falls back to "Print Farm".
+- Fleet cards show a wall-clock ETA ("2h 5m left · done 5:12 PM", with tomorrow/weekday rollover).
+- G-code uploads report progress (XHR `onprogress`): percentage in the button plus a thin progress bar.
+- Jobs page: card layout under 700px (the 9-column table was unusable on phones); filters persist in the URL (`useSearchParams`).
+
+### Polish & accessibility
+- Global `:focus-visible` outline in `index.css` (uses `!important` to beat inline `outline: none`, which only exists to suppress mouse-click rings).
+- `aria-label` on icon-only × delete buttons; drag handles marked `aria-hidden`; confirm modal gets `role="alertdialog"` + `aria-modal`.
+- Jobs status colors aligned with Fleet (printing = blue, uploading = violet); cancelled gets line-through as a non-color cue.
+- Part status chip restyled dot+text so it no longer reads as a button next to the Details toggle.
+- Fleet zero-count filter chips hidden unless active; "Parse" button renamed "Parse filename" and enlarged; PrinterDetail pagination touch targets enlarged; PollTimer redraw interval 100ms → 500ms.
+- Backend error detail surfaced in remaining generic handlers (Decommissioned note save).
+
+### Docs
+- `docs/api.md`: documented `GET /api/parts/:id/dispatch-status` and the Settings endpoints (`GET /api/settings`, `PUT /api/settings/:key` with allowed-keys table).
+- `docs/web-app.md`: Settings section order, credential help, and Farm Name behavior.
+
+---
+
 ## 2026-07-01 — Open-source release prep
 
 Pre-release hardening pass before public open-source release.

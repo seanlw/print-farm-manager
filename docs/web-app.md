@@ -205,6 +205,12 @@ Responsive grid of decommissioned printers — printers that have been pulled fr
 5. Clicking Save calls `POST /api/printers` with the operator-selected model
 6. Saved rows are removed from the flagged list and the imported count increments
 
+**Section order** (tuned for first-run flow): Server Alerts → Printer Models → Filament Library → Add Printer → CSV Import → Farm Name → Dispatch Settings → Farm Backup → Polling info. Models and Filaments come first because the Add Printer form depends on them.
+
+**Add Printer form:** shows a per-brand help box (`CREDENTIAL_HELP`) explaining where to find each brand's credentials (PrusaLink API key, Bambu LAN access code + serial, Elegoo/Klipper no key). If no models exist for the selected brand, an inline hint points at the Printer Models section.
+
+**Farm Name section:** saves the `farm_name` setting (`PUT /api/settings/farm_name`); `App.jsx` fetches it on load and shows it in the sidebar/topbar, falling back to "Print Farm".
+
 **Farm Backup section:** Export and Restore buttons — see [api.md](api.md) for the backup endpoints.
 
 **Polling info section:** displays the 15-second interval and explains concurrent polling behavior.

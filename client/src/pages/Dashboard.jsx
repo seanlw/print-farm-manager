@@ -19,13 +19,13 @@ const CELL_COLORS = {
 const STAT_CARDS = [
   { key: 'printing',    label: 'Printing',    color: '#3b82f6', accent: '#1e40af' },
   { key: 'idle',        label: 'Idle',        color: '#6b7280', accent: '#374151' },
-  { key: 'awaiting',    label: 'Awaiting',    color: '#22c55e', accent: '#15803d' },
+  { key: 'awaiting',    label: 'Awaiting Sign-off', color: '#22c55e', accent: '#15803d', help: 'Finished prints waiting for an operator to confirm good/bad before the next job dispatches' },
   { key: 'parts_today', label: 'Parts Today', color: '#a78bfa', accent: '#7c3aed' },
 ];
 
 const LEGEND_ITEMS = [
   { label: 'Printing', color: '#3b82f6' },
-  { label: 'Awaiting', color: '#22c55e' },
+  { label: 'Awaiting Sign-off', color: '#22c55e' },
   { label: 'Idle',     color: '#4b5563' },
   { label: 'Stopped',  color: '#fb923c' },
   { label: 'Error',    color: '#ef4444' },
@@ -91,7 +91,7 @@ function RowSummary({ group }) {
         }).length;
         if (count === 0) return null;
         const c = CELL_COLORS[s] || CELL_COLORS.IDLE;
-        const label = s === 'FINISHED' ? 'AWAIT' : s.slice(0, 4);
+        const label = s === 'FINISHED' ? 'AWAITING' : s;
         return (
           <span key={s} style={{
             fontSize: 10, color: c.text, background: c.bg,
@@ -250,8 +250,8 @@ export default function Dashboard() {
 
         {/* ── STAT CARDS ──────────────────────────────────────────────────── */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-          {STAT_CARDS.map(({ key, label, color, accent }) => (
-            <div key={key} style={{
+          {STAT_CARDS.map(({ key, label, color, accent, help }) => (
+            <div key={key} title={help} style={{
               background: '#1e2433', borderRadius: 8,
               padding: '16px 20px',
               display: 'flex', alignItems: 'center', gap: 18,
@@ -353,7 +353,9 @@ export default function Dashboard() {
           </div>
 
           {active_projects.length === 0 ? (
-            <p style={{ color: '#374151', fontSize: 13, margin: 0 }}>No active projects.</p>
+            <p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>
+              No active projects. Create one on the Projects page and set it Active to track production here.
+            </p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {active_projects.map(proj => {

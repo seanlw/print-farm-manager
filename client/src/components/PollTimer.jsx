@@ -8,7 +8,8 @@ export default function PollTimer({ lastPolled, intervalMs = 15000, size = 20, s
   useEffect(() => {
     if (lastPolled == null) return;
     setElapsed(0);
-    const id = setInterval(() => setElapsed(Date.now() - lastPolled), 100);
+    // 500ms is plenty for a 15s ring — 100ms redrew 10×/s for no visible gain
+    const id = setInterval(() => setElapsed(Date.now() - lastPolled), 500);
     return () => clearInterval(id);
   }, [lastPolled]);
 

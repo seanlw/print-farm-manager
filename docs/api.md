@@ -295,6 +295,21 @@ Each part includes `active_qty` — the sum of `parts_per_plate` across all `upl
 
 Also includes `active_qty` (same calculation as the list endpoint).
 
+### `GET /api/parts/:id/dispatch-status`
+
+Diagnostic for the "Why isn't this printing?" button on the Projects page. Mirrors the scheduler's eligibility rules and returns why the part is or isn't dispatching right now.
+
+```json
+{
+  "dispatchable": false,
+  "reasons": ["gridfinity_2x4_x1c.3mf: all 1 matching printer(s) are busy"],
+  "notes": []
+}
+```
+
+- `reasons` — populated when `dispatchable` is `false`: global blockers (project not active, part complete, no G-code, remaining qty already covered by in-progress jobs) followed by per-G-code availability problems (no printers of that model, group/material/color mismatch, all matching printers busy or held).
+- `notes` — populated when `dispatchable` is `true`: advisory per-G-code items (e.g. one G-code can dispatch but another has no ready printers).
+
 ### `POST /api/parts`
 
 Required: `project_id`, `name`, `target_qty`.
@@ -463,6 +478,25 @@ Returns all current notifications, newest first.
 ### `DELETE /api/notifications/:id`
 
 Dismisses a notification. Returns `{ "ok": true }`. Returns `404` if not found.
+
+---
+
+## Settings
+
+### `GET /api/settings`
+
+Returns all operator settings as a flat object, e.g. `{ "dispatch_batch_size": "10", "farm_name": "My Farm" }`.
+
+### `PUT /api/settings/:key`
+
+Body: `{ "value": "..." }`. Allowed keys:
+
+| Key | Validation | Used by |
+|---|---|---|
+| `dispatch_batch_size` | integer 1–100 | Scheduler batch size |
+| `farm_name` | ≤ 40 chars | Sidebar branding (falls back to "Print Farm") |
+
+Returns `400` for unknown keys or failed validation.
 
 ---
 

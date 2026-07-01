@@ -43,6 +43,9 @@ export function useConfirm() {
       onClick={() => handleAction(null)}
     >
       <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={state.title || 'Confirm'}
         style={{
           background: '#1e2433',
           border: '1px solid #334155',

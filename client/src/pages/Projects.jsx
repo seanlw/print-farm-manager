@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useToast } from '../useToast';
+import EmptyState from '../components/EmptyState';
 import { useConfirm } from '../useConfirm';
 
 // ── Estimate helpers ──────────────────────────────────────────────────────────
@@ -122,8 +123,8 @@ function StatusDropdown({ project, onTransition }) {
 }
 
 const PART_STATUS = {
-  open:   { bg: '#1e3a5f', text: '#60a5fa', label: 'Open' },
-  closed: { bg: '#14532d', text: '#86efac', label: 'Closed' },
+  open:   { bg: '#1e3a5f', text: '#60a5fa', label: 'Open',     help: 'Still needs parts — the scheduler will keep dispatching jobs for it' },
+  closed: { bg: '#14532d', text: '#86efac', label: 'Complete', help: 'Target quantity reached — no more jobs will dispatch for this part' },
 };
 
 const inputSx = {
@@ -136,12 +137,20 @@ const inputSx = {
   outline: 'none',
 };
 
+const uploadLabelSx = {
+  fontSize: 10.5,
+  fontWeight: 600,
+  color: '#64748b',
+  marginBottom: 3,
+};
+
 function GcodeUploadPanel({ part, onUploaded, filamentTypes, filamentColors, projectMaterial, projectColor }) {
   const [file, setFile]             = useState(null);
   const [partsPerPlate, setPPP]     = useState('');
   const [model, setModel]           = useState('');
   const [error, setError]           = useState(null);
   const [uploading, setUploading]   = useState(false);
+  const [uploadPct, setUploadPct]   = useState(null);
   const fileInputRef                = useRef(null);
   const [modelOptions, setModelOptions] = useState([]);
   const [amsSlots, setAmsSlots]     = useState([]);
@@ -231,9 +240,22 @@ function GcodeUploadPanel({ part, onUploaded, filamentTypes, filamentColors, pro
     if (requiredColor.trim())    fd.append('required_color',    requiredColor.trim());
 
     try {
-      const res  = await fetch('/api/gcodes/upload', { method: 'POST', body: fd });
-      const data = await res.json();
-      if (!res.ok) {
+      // XHR instead of fetch so we can report upload progress on large files
+      const { ok, data } = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/gcodes/upload');
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) setUploadPct(Math.round((e.loaded / e.total) * 100));
+        };
+        xhr.onload = () => {
+          let body = {};
+          try { body = JSON.parse(xhr.responseText); } catch { /* non-JSON error body */ }
+          resolve({ ok: xhr.status >= 200 && xhr.status < 300, data: body });
+        };
+        xhr.onerror = () => reject(new Error('Network error during upload'));
+        xhr.send(fd);
+      });
+      if (!ok) {
         setError(data.error || 'Upload failed.');
       } else {
         setFile(null); setPPP(''); setModel(''); setAmsSlot(''); setAmsSlots([]);
@@ -246,68 +268,92 @@ function GcodeUploadPanel({ part, onUploaded, filamentTypes, filamentColors, pro
       setError(err.message);
     }
     setUploading(false);
+    setUploadPct(null);
   }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <label style={{ cursor: 'pointer' }}>
-          <input ref={fileInputRef} type="file" accept=".bgcode,.gcode,.3mf" onChange={handleFileChange} style={{ display: 'none' }} />
-          <span style={{
-            ...inputSx,
-            display: 'inline-block',
-            maxWidth: 240,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            cursor: 'pointer',
-            color: file ? '#e2e8f0' : '#475569',
-          }}>
-            {file ? file.name : 'Choose .gcode / .bgcode / .3mf…'}
-          </span>
-        </label>
-        <input
-          type="number"
-          min={1}
-          placeholder="Parts/plate"
-          value={partsPerPlate}
-          onChange={(e) => setPPP(e.target.value)}
-          style={{ ...inputSx, width: 100 }}
-        />
-        <select
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          style={{ ...inputSx, width: 90 }}
-        >
-          <option value="">Model…</option>
-          {modelOptions.map(m => <option key={m.model_id} value={m.model_id}>{m.label}</option>)}
-        </select>
-        {amsSlots.length > 0 && (
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <div>
+          <div style={uploadLabelSx}>File *</div>
+          <label style={{ cursor: 'pointer' }}>
+            <input ref={fileInputRef} type="file" accept=".bgcode,.gcode,.3mf" onChange={handleFileChange} style={{ display: 'none' }} />
+            <span style={{
+              ...inputSx,
+              display: 'inline-block',
+              maxWidth: 240,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              cursor: 'pointer',
+              color: file ? '#e2e8f0' : '#475569',
+            }}>
+              {file ? file.name : 'Choose .gcode / .bgcode / .3mf…'}
+            </span>
+          </label>
+        </div>
+        <div>
+          <div style={uploadLabelSx}>Parts per plate *</div>
+          <input
+            type="number"
+            min={1}
+            placeholder="e.g. 4"
+            title="How many finished parts one plate of this G-code produces — each good print credits this many toward the part's target"
+            value={partsPerPlate}
+            onChange={(e) => setPPP(e.target.value)}
+            style={{ ...inputSx, width: 110 }}
+          />
+        </div>
+        <div>
+          <div style={uploadLabelSx}>Printer model *</div>
           <select
-            value={amsSlot}
-            onChange={(e) => setAmsSlot(e.target.value)}
-            style={{ ...inputSx, width: 160 }}
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            style={{ ...inputSx, width: 110 }}
           >
-            <option value="">AMS slot…</option>
-            {amsSlots.map(s => s.slot === -1
-              ? <option key="ext" value="-1">External Spool{s.type ? ` — ${s.type}` : ''}</option>
-              : <option key={s.slot} value={String(s.slot)}>Slot {s.slot} — {s.type || 'unknown'}</option>
-            )}
+            <option value="">Select…</option>
+            {modelOptions.map(m => <option key={m.model_id} value={m.model_id}>{m.label}</option>)}
           </select>
+        </div>
+        {amsSlots.length > 0 && (
+          <div>
+            <div style={uploadLabelSx}>AMS slot *</div>
+            <select
+              value={amsSlot}
+              onChange={(e) => setAmsSlot(e.target.value)}
+              style={{ ...inputSx, width: 160 }}
+            >
+              <option value="">Select…</option>
+              {amsSlots.map(s => s.slot === -1
+                ? <option key="ext" value="-1">External Spool{s.type ? ` — ${s.type}` : ''}</option>
+                : <option key={s.slot} value={String(s.slot)}>Slot {s.slot} — {s.type || 'unknown'}</option>
+              )}
+            </select>
+          </div>
         )}
         <button
           onClick={handleUpload}
           disabled={uploading || bambuNeedsThreemf}
           style={{
             background: '#1d4ed8', color: '#fff', border: 'none', borderRadius: 4,
-            padding: '5px 14px', fontSize: 12, fontWeight: 600,
+            padding: '6px 14px', fontSize: 12, fontWeight: 600,
             cursor: (uploading || bambuNeedsThreemf) ? 'not-allowed' : 'pointer',
             opacity: (uploading || bambuNeedsThreemf) ? 0.5 : 1,
           }}
         >
-          {uploading ? 'Uploading…' : 'Upload'}
+          {uploading ? (uploadPct != null ? `Uploading… ${uploadPct}%` : 'Uploading…') : 'Upload'}
         </button>
       </div>
+
+      {uploading && uploadPct != null && (
+        <div style={{ background: '#0f172a', borderRadius: 3, height: 5, overflow: 'hidden' }}>
+          <div style={{ background: '#3b82f6', height: '100%', width: `${uploadPct}%`, transition: 'width 0.2s' }} />
+        </div>
+      )}
+
+      <p style={{ margin: 0, fontSize: 11, color: '#475569' }}>
+        Tip: filenames with a model, print time, and weight (e.g. <span className="mono">bracket_MK4S_2h30m_45g.gcode</span>) auto-fill these fields — you can adjust them after upload.
+      </p>
 
       {bambuNeedsThreemf && (
         <p style={{ margin: 0, fontSize: 12, color: '#b45309', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 4, padding: '5px 10px' }}>
@@ -317,7 +363,10 @@ function GcodeUploadPanel({ part, onUploaded, filamentTypes, filamentColors, pro
 
       {/* Targeting — material, color, groups */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span style={{ fontSize: 11, color: '#475569', flexShrink: 0 }}>Targeting:</span>
+        <span
+          title="Optional: restrict which printers can run this file. Material/color must match what an operator marked as loaded on the printer; groups restrict dispatch to those printer groups. Leave everything blank to allow any matching printer."
+          style={{ fontSize: 11, color: '#475569', flexShrink: 0, cursor: 'help', borderBottom: '1px dotted #334155' }}
+        >Targeting:</span>
         {filamentTypes.length > 0 ? (
           <select
             value={requiredMaterial}
@@ -461,9 +510,10 @@ function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors
         <button
           onClick={onDelete}
           title="Delete G-code"
+          aria-label={`Delete G-code ${gc.filename}`}
           style={{
             background: 'none', border: 'none', color: '#ef4444',
-            cursor: 'pointer', padding: '0 2px', fontSize: 16, lineHeight: 1, flexShrink: 0,
+            cursor: 'pointer', padding: '4px 6px', fontSize: 16, lineHeight: 1, flexShrink: 0,
           }}
         >×</button>
       </div>
@@ -489,15 +539,15 @@ function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors
         <button
           onClick={parseFromFilename}
           disabled={parsing}
-          title="Auto-fill from filename"
+          title="Re-read print time and material weight from the filename (e.g. …_2h30m_45g.gcode)"
           style={{
             background: '#1f2937', color: '#94a3b8',
             border: '1px solid #2d3748', borderRadius: 4,
-            padding: '4px 10px', fontSize: 11, cursor: parsing ? 'not-allowed' : 'pointer',
+            padding: '5px 10px', fontSize: 12, cursor: parsing ? 'not-allowed' : 'pointer',
             opacity: parsing ? 0.7 : 1, flexShrink: 0,
           }}
         >
-          {parsing ? 'Parsing…' : 'Parse'}
+          {parsing ? 'Parsing…' : 'Parse filename'}
         </button>
         <button
           onClick={save}
@@ -515,7 +565,10 @@ function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors
 
       {/* Targeting row */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 11, color: '#475569', flexShrink: 0 }}>Targeting:</span>
+        <span
+          title="Optional: restrict which printers can run this file. Material/color must match what an operator marked as loaded on the printer; groups restrict dispatch to those printer groups. Leave everything blank to allow any matching printer."
+          style={{ fontSize: 11, color: '#475569', flexShrink: 0, cursor: 'help', borderBottom: '1px dotted #334155' }}
+        >Targeting:</span>
         {filamentTypes.length > 0 ? (
           <select
             value={reqMaterial}
@@ -576,6 +629,22 @@ function PartDetailsPanel({ part, gcodes, onRefresh, onSaved, onConfirm, filamen
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft]     = useState('');
   const nameEscapedRef = useRef(false);
+
+  // Dispatch diagnostic — "why isn't this printing?"
+  const [dispatchCheck, setDispatchCheck] = useState(null);
+  const [checking, setChecking] = useState(false);
+
+  async function runDispatchCheck() {
+    setChecking(true);
+    try {
+      const res  = await fetch(`/api/parts/${part.id}/dispatch-status`);
+      const data = await res.json();
+      setDispatchCheck(res.ok ? data : { dispatchable: false, reasons: [data.error || 'Check failed'] });
+    } catch (err) {
+      setDispatchCheck({ dispatchable: false, reasons: [err.message] });
+    }
+    setChecking(false);
+  }
 
   useEffect(() => {
     setHave(String(part.completed_qty));
@@ -758,6 +827,43 @@ function PartDetailsPanel({ part, gcodes, onRefresh, onSaved, onConfirm, filamen
           projectMaterial={projectMaterial}
           projectColor={projectColor}
         />
+      </div>
+
+      {/* Dispatch diagnostic */}
+      <div>
+        <button
+          onClick={runDispatchCheck}
+          disabled={checking}
+          style={{
+            background: '#1f2937', color: '#94a3b8', border: '1px solid #2d3748',
+            borderRadius: 4, padding: '5px 12px', fontSize: 12, cursor: checking ? 'wait' : 'pointer',
+          }}
+        >
+          {checking ? 'Checking…' : 'Why isn’t this printing?'}
+        </button>
+        {dispatchCheck && (
+          <div style={{
+            marginTop: 8, borderRadius: 6, padding: '8px 12px', fontSize: 12, lineHeight: 1.6,
+            background: dispatchCheck.dispatchable ? '#14532d' : '#1a1f2e',
+            border: `1px solid ${dispatchCheck.dispatchable ? '#166534' : '#7c5806'}`,
+            color: dispatchCheck.dispatchable ? '#86efac' : '#fbbf24',
+          }}>
+            {dispatchCheck.dispatchable ? (
+              <>
+                Ready to dispatch — a matching idle printer will pick this up on the next sweep.
+                {dispatchCheck.notes?.length > 0 && (
+                  <ul style={{ margin: '6px 0 0', paddingLeft: 18, color: '#a3b3c9' }}>
+                    {dispatchCheck.notes.map((n, i) => <li key={i}>{n}</li>)}
+                  </ul>
+                )}
+              </>
+            ) : (
+              <ul style={{ margin: 0, paddingLeft: 18 }}>
+                {dispatchCheck.reasons.map((r, i) => <li key={i}>{r}</li>)}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1221,7 +1327,19 @@ export default function Projects() {
 
         {loading && <p style={{ color: '#64748b' }}>Loading…</p>}
         {!loading && projects.length === 0 && (
-          <p style={{ color: '#64748b' }}>No projects yet. Create one above.</p>
+          <EmptyState
+            title="Create your first project"
+            hint={
+              <>
+                Projects are how work flows through the farm:&nbsp;
+                a <strong style={{ color: '#cbd5e1' }}>Project</strong> contains{' '}
+                <strong style={{ color: '#cbd5e1' }}>Parts</strong> (what to print and how many),
+                each part gets <strong style={{ color: '#cbd5e1' }}>G-code</strong> uploaded per printer model,
+                and the scheduler dispatches <strong style={{ color: '#cbd5e1' }}>Jobs</strong> to idle printers
+                until every part hits its target quantity. Start with “+ New Project” above.
+              </>
+            }
+          />
         )}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1250,6 +1368,7 @@ export default function Projects() {
                 {/* Drag handle */}
                 <span
                   title="Drag to reorder"
+                  aria-hidden="true"
                   style={{ color: '#334155', fontSize: 16, cursor: 'grab', flexShrink: 0, userSelect: 'none', lineHeight: 1 }}
                 >⠿</span>
 
@@ -1413,6 +1532,7 @@ export default function Projects() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: 200, flexShrink: 0 }}>
                 <span
                   title="Drag to reorder"
+                  aria-hidden="true"
                   style={{ color: '#334155', fontSize: 16, cursor: 'grab', flexShrink: 0, userSelect: 'none', lineHeight: 1 }}
                 >⠿</span>
                 <span style={{ fontWeight: 600, fontSize: 14 }}>{part.name}</span>
@@ -1462,12 +1582,17 @@ export default function Projects() {
                 </div>
               </div>
 
-              {/* Status badge — fixed width so bar length is consistent across all parts */}
-              <span style={{
-                background: partSt.bg, color: partSt.text, borderRadius: 4,
-                padding: '2px 8px', fontSize: 11, fontWeight: 700,
-                width: 54, flexShrink: 0, textAlign: 'center',
-              }}>
+              {/* Status indicator — dot + text (not a pill, so it doesn't read as a button
+                  next to the Details toggle). Fixed width keeps bar length consistent. */}
+              <span
+                title={partSt.help}
+                style={{
+                  color: partSt.text, fontSize: 11, fontWeight: 700,
+                  width: 76, flexShrink: 0, cursor: 'help',
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+                }}
+              >
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: partSt.text, flexShrink: 0 }} />
                 {partSt.label}
               </span>
 
@@ -1488,9 +1613,10 @@ export default function Projects() {
               <button
                 onClick={() => deletePart(part.id, part.name)}
                 title="Delete part"
+                aria-label={`Delete part ${part.name}`}
                 style={{
                   background: 'none', border: 'none', color: '#ef4444',
-                  cursor: 'pointer', padding: '0 2px', fontSize: 18, lineHeight: 1, flexShrink: 0,
+                  cursor: 'pointer', padding: '4px 6px', fontSize: 18, lineHeight: 1, flexShrink: 0,
                 }}
               >×</button>
             </div>

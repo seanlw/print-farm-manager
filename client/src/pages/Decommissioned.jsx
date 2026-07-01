@@ -72,7 +72,7 @@ export default function Decommissioned() {
       setDraftNote('');
       showToast('Note saved', 'success');
     } catch (err) {
-      showToast('Failed to save note', 'error');
+      showToast(`Failed to save note: ${err.message}`, 'error');
     } finally {
       setSaving(false);
     }

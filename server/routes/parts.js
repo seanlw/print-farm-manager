@@ -27,6 +27,97 @@ module.exports = (db) => {
     res.json(part);
   });
 
+  // Diagnostic: why is (or isn't) this part dispatching?
+  // Mirrors the scheduler's eligibility rules (sweepIdlePrinters + candidate query)
+  // so operators can self-diagnose "why isn't my part printing" from the UI.
+  router.get('/:id/dispatch-status', (req, res) => {
+    const part = db.prepare(`
+      SELECT parts.*, ${ACTIVE_QTY_SQL},
+             projects.status            AS project_status,
+             projects.required_material AS project_material,
+             projects.required_color    AS project_color
+      FROM parts JOIN projects ON projects.id = parts.project_id
+      WHERE parts.id = ?
+    `).get(req.params.id);
+    if (!part) return res.status(404).json({ error: 'Part not found' });
+
+    // Blockers stop dispatch entirely; per-gcode notes explain why individual
+    // G-codes can't run right now. The part is dispatchable if there are no
+    // blockers and at least one G-code has a ready printer.
+    const blockers = [];
+    const notes = [];
+    let anyGcodeReady = false;
+
+    if (part.project_status !== 'active') {
+      blockers.push('Project is not Active — activate it to enable dispatch');
+    }
+    if (part.status !== 'open') {
+      blockers.push('Part is complete — target quantity reached');
+    }
+
+    const remaining = Math.max(0, part.target_qty - part.completed_qty);
+    if (part.status === 'open' && part.active_qty >= remaining && remaining > 0) {
+      blockers.push(`Jobs already printing cover the remaining ${remaining} part(s) — waiting for them to finish`);
+    }
+
+    const gcodes = db.prepare('SELECT * FROM gcodes WHERE part_id = ?').all(part.id);
+    if (gcodes.length === 0) {
+      blockers.push('No G-code uploaded — upload one per printer model this part can print on');
+    }
+
+    // Per-gcode printer availability, using the same filters as the scheduler
+    for (const gc of gcodes) {
+      const requiredMaterial = gc.required_material || part.project_material || null;
+      const requiredColor    = gc.required_color    || part.project_color    || null;
+      const allowedGroups    = gc.allowed_groups ? JSON.parse(gc.allowed_groups) : null;
+
+      const modelPrinters = db.prepare(
+        'SELECT * FROM printers WHERE model = ? AND is_active = 1'
+      ).all(gc.printer_model);
+
+      if (modelPrinters.length === 0) {
+        notes.push(`${gc.filename}: no active printers of model "${gc.printer_model}"`);
+        continue;
+      }
+
+      const groupOk    = modelPrinters.filter(p => !allowedGroups || allowedGroups.includes(p.group_name));
+      if (groupOk.length === 0) {
+        notes.push(`${gc.filename}: no printers in allowed group(s) ${allowedGroups.join(', ')}`);
+        continue;
+      }
+
+      const materialOk = groupOk.filter(p =>
+        (!requiredMaterial || p.loaded_material === requiredMaterial) &&
+        (!requiredColor    || p.loaded_color    === requiredColor)
+      );
+      if (materialOk.length === 0) {
+        const want = [requiredMaterial, requiredColor].filter(Boolean).join(' / ');
+        notes.push(`${gc.filename}: no printer has ${want} loaded (set it on the printer's detail page)`);
+        continue;
+      }
+
+      const ready = materialOk.filter(p =>
+        (p.status === 'IDLE' || p.status === 'FINISHED') && p.is_held === 0
+      );
+      if (ready.length === 0) {
+        const held = materialOk.filter(p => p.is_held === 1).length;
+        notes.push(
+          `${gc.filename}: all ${materialOk.length} matching printer(s) are busy` +
+          (held > 0 ? ` (${held} awaiting operator sign-off)` : '')
+        );
+      } else {
+        anyGcodeReady = true;
+      }
+    }
+
+    const dispatchable = blockers.length === 0 && anyGcodeReady;
+    res.json({
+      dispatchable,
+      reasons: dispatchable ? [] : [...blockers, ...notes],
+      notes: dispatchable ? notes : [],
+    });
+  });
+
   router.post('/', (req, res) => {
     const { project_id, name, target_qty } = req.body;
     if (!project_id || !name || !target_qty) {

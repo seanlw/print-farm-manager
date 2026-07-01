@@ -557,7 +557,9 @@ export default function PrinterDetail() {
       </div>
 
       {events.length === 0 && (
-        <p style={{ color: '#475569', fontSize: 14 }}>No events recorded yet.</p>
+        <p style={{ color: '#475569', fontSize: 14 }}>
+          No history yet — events are recorded automatically as this printer receives jobs, finishes prints, or changes status.
+        </p>
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -630,7 +632,7 @@ export default function PrinterDetail() {
                 style={{
                   background: jobPage === 1 ? '#1e2433' : '#1e3a5f',
                   color: jobPage === 1 ? '#475569' : '#93c5fd',
-                  border: 'none', borderRadius: 5, padding: '5px 14px',
+                  border: 'none', borderRadius: 5, padding: '8px 16px',
                   fontSize: 13, fontWeight: 600, cursor: jobPage === 1 ? 'not-allowed' : 'pointer',
                 }}
               >← Prev</button>
@@ -643,7 +645,7 @@ export default function PrinterDetail() {
                 style={{
                   background: jobPage === jobHistory.total_pages ? '#1e2433' : '#1e3a5f',
                   color: jobPage === jobHistory.total_pages ? '#475569' : '#93c5fd',
-                  border: 'none', borderRadius: 5, padding: '5px 14px',
+                  border: 'none', borderRadius: 5, padding: '8px 16px',
                   fontSize: 13, fontWeight: 600, cursor: jobPage === jobHistory.total_pages ? 'not-allowed' : 'pointer',
                 }}
               >Next →</button>

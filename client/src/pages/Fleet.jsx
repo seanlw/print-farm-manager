@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import PollTimer from '../components/PollTimer';
+import EmptyState from '../components/EmptyState';
 import { useConfirm } from '../useConfirm';
 import { useToast } from '../useToast';
 
 const STATUS_COLORS = {
   PRINTING:   { bg: '#1e3a5f', text: '#60a5fa', label: 'Printing' },
   IDLE:       { bg: '#1f2937', text: '#6b7280', label: 'Idle' },
-  READY:      { bg: '#1f2937', text: '#94a3b8', label: 'Prepared' },
+  READY:      { bg: '#1f2937', text: '#94a3b8', label: 'Ready' },
   FINISHED:   { bg: '#14532d', text: '#86efac', label: 'Finished' },
   STOPPED:    { bg: '#431407', text: '#fb923c', label: 'Stopped' },
   PAUSED:     { bg: '#78350f', text: '#fbbf24', label: 'Paused' },
@@ -30,6 +31,17 @@ function formatTimeRemaining(secs) {
   if (h > 0) return `${h}h ${m}m left`;
   if (m > 0) return `${m}m left`;
   return '< 1m left';
+}
+
+// Wall-clock finish time — "done 3:45 PM", with a day marker if it rolls past midnight
+function formatEta(secs) {
+  if (secs == null || secs < 0) return null;
+  const eta = new Date(Date.now() + secs * 1000);
+  const time = eta.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const days = Math.floor((eta - new Date(new Date().setHours(0, 0, 0, 0))) / 86400000);
+  if (days === 1) return `done ${time} tomorrow`;
+  if (days > 1) return `done ${eta.toLocaleDateString(undefined, { weekday: 'short' })} ${time}`;
+  return `done ${time}`;
 }
 
 function PrinterCard({ printer, selected, onToggleSelect, onSetReady, onBadPrint, onUploadFailed, onDecommission, onLinkJob, onOpenDetail }) {
@@ -69,6 +81,7 @@ function PrinterCard({ printer, selected, onToggleSelect, onSetReady, onBadPrint
   const isPrinting = printer.status === 'PRINTING';
   const pct = isPrinting && printer.job_progress != null ? Math.round(printer.job_progress) : null;
   const timeLeft = isPrinting ? formatTimeRemaining(printer.job_time_remaining) : null;
+  const eta      = isPrinting ? formatEta(printer.job_time_remaining) : null;
 
   function cardBorder() {
     if (needsOfflineConfirmation || needsUploadConfirmation) return '#92400e';
@@ -138,7 +151,12 @@ function PrinterCard({ printer, selected, onToggleSelect, onSetReady, onBadPrint
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#475569' }}>
             <span>{pct != null ? `${pct}%` : '—'}</span>
-            {timeLeft && <span>{timeLeft}</span>}
+            {timeLeft && (
+              <span>
+                {timeLeft}
+                {eta && <span style={{ color: '#64748b' }}> · {eta}</span>}
+              </span>
+            )}
           </div>
         </div>
       )}
@@ -172,11 +190,16 @@ function PrinterCard({ printer, selected, onToggleSelect, onSetReady, onBadPrint
           <div style={{ display: 'flex', gap: 6 }}>
             <button
               onClick={() => onSetReady(printer.id, printer.last_parts_per_plate != null ? parseInt(confirmedQty, 10) : null)}
+              title="Confirm the print was good — credits the part count and returns this printer to the dispatch queue"
               style={{ flex: 1, background: '#166534', color: '#4ade80', border: 'none', borderRadius: 6, padding: '5px 0', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
             >
               ✓ Set Ready
             </button>
-            <button onClick={() => onBadPrint(printer.id)} style={{ flex: 1, background: '#7f1d1d', color: '#f87171', border: 'none', borderRadius: 6, padding: '5px 0', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+            <button
+              onClick={() => onBadPrint(printer.id)}
+              title="Mark the print as failed — no parts are credited; the job re-queues so it can print again"
+              style={{ flex: 1, background: '#7f1d1d', color: '#f87171', border: 'none', borderRadius: 6, padding: '5px 0', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+            >
               ✗ Bad Print
             </button>
           </div>
@@ -235,7 +258,7 @@ function PrinterCard({ printer, selected, onToggleSelect, onSetReady, onBadPrint
         <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 2 }}>
           <button
             onClick={() => onLinkJob(printer.id, false)}
-            title="Associate a failed or stalled job with this printer for record keeping"
+            title="Stalled upload? Tell the system which queued job is actually printing on this machine so tracking stays correct"
             style={{ background: 'none', color: '#60a5fa', border: '1px solid #1e3a5f', borderRadius: 6, padding: '3px 8px', fontSize: 11, cursor: 'pointer' }}
           >
             Link Job
@@ -316,21 +339,31 @@ export default function Fleet() {
   }
 
   async function setReady(printerId, confirmedQty) {
-    await fetch(`/api/printers/${printerId}/set-ready`, {
+    const res = await fetch(`/api/printers/${printerId}/set-ready`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(confirmedQty != null ? { confirmed_qty: confirmedQty } : {}),
     });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      showToast(`Set Ready failed: ${body.error || res.status}`, 'error');
+      return;
+    }
     setSelectedForReady(prev => { const next = new Set(prev); next.delete(printerId); return next; });
     fetchPrinters();
   }
 
   async function setReadyForSelected() {
-    await fetch('/api/printers/set-ready-batch', {
+    const res = await fetch('/api/printers/set-ready-batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: [...selectedForReady] }),
     });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      showToast(`Batch Set Ready failed: ${body.error || res.status}`, 'error');
+      return;
+    }
     setSelectedForReady(new Set());
     fetchPrinters();
   }
@@ -627,7 +660,7 @@ export default function Fleet() {
         </div>
         <button
           onClick={sweep}
-          title="Tell the scheduler to find and dispatch jobs to all idle ready machines"
+          title="Manually trigger job dispatch now. This normally happens automatically — use it to start jobs on idle machines without waiting for the next cycle."
           style={{ background: '#1e2433', color: '#94a3b8', border: '1px solid #2d3748', borderRadius: 6, padding: '5px 14px', fontSize: 13, cursor: 'pointer' }}
         >
           Sweep for Jobs
@@ -717,16 +750,18 @@ export default function Fleet() {
       {/* Filter chips */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
         {[
-          { key: 'ALL',      label: `All (${printers.length})`,               color: '#64748b' },
-          { key: 'PRINTING', label: `Printing (${counts.PRINTING || 0})`,   color: STATUS_COLORS.PRINTING.text },
-          { key: 'IDLE',     label: `Idle (${counts.IDLE || 0})`,           color: STATUS_COLORS.IDLE.text },
-          { key: 'FINISHED', label: `Finished (${counts.FINISHED || 0})`,   color: STATUS_COLORS.FINISHED.text },
-          { key: 'STOPPED',  label: `Stopped (${counts.STOPPED || 0})`,     color: STATUS_COLORS.STOPPED.text },
-          { key: 'ERROR',    label: `Error (${counts.ERROR || 0})`,         color: STATUS_COLORS.ERROR.text },
-          { key: 'ATTENTION',label: `Attention (${counts.ATTENTION || 0})`, color: STATUS_COLORS.ATTENTION.text },
-          { key: 'OFFLINE',  label: `Offline (${counts.OFFLINE || 0})`,     color: STATUS_COLORS.OFFLINE.text },
-          ...(hasUnknown ? [{ key: 'UNKNOWN', label: `Unknown (${printers.filter(p => !KNOWN_STATUSES.has(p.status)).length})`, color: STATUS_COLORS.UNKNOWN.text }] : []),
-        ].map(({ key, label, color }) => (
+          { key: 'ALL',      count: printers.length,        label: `All (${printers.length})`,             color: '#64748b' },
+          { key: 'PRINTING', count: counts.PRINTING || 0,   label: `Printing (${counts.PRINTING || 0})`,   color: STATUS_COLORS.PRINTING.text },
+          { key: 'IDLE',     count: counts.IDLE || 0,       label: `Idle (${counts.IDLE || 0})`,           color: STATUS_COLORS.IDLE.text },
+          { key: 'FINISHED', count: counts.FINISHED || 0,   label: `Finished (${counts.FINISHED || 0})`,   color: STATUS_COLORS.FINISHED.text },
+          { key: 'STOPPED',  count: counts.STOPPED || 0,    label: `Stopped (${counts.STOPPED || 0})`,     color: STATUS_COLORS.STOPPED.text },
+          { key: 'ERROR',    count: counts.ERROR || 0,      label: `Error (${counts.ERROR || 0})`,         color: STATUS_COLORS.ERROR.text },
+          { key: 'ATTENTION',count: counts.ATTENTION || 0,  label: `Attention (${counts.ATTENTION || 0})`, color: STATUS_COLORS.ATTENTION.text },
+          { key: 'OFFLINE',  count: counts.OFFLINE || 0,    label: `Offline (${counts.OFFLINE || 0})`,     color: STATUS_COLORS.OFFLINE.text },
+          ...(hasUnknown ? [{ key: 'UNKNOWN', count: 1, label: `Unknown (${printers.filter(p => !KNOWN_STATUSES.has(p.status)).length})`, color: STATUS_COLORS.UNKNOWN.text }] : []),
+        // Zero-count chips are noise — hide them unless that filter is currently active
+        ].filter(({ key, count }) => key === 'ALL' || count > 0 || filter === key)
+         .map(({ key, label, color }) => (
           <button
             key={key}
             onClick={() => setFilter(key)}
@@ -777,9 +812,12 @@ export default function Fleet() {
       )}
       {error && <p style={{ color: '#f87171' }}>Error: {error}</p>}
       {!loading && printers.length === 0 && (
-        <p style={{ color: '#64748b' }}>
-          No printers registered. Import a CSV on the Settings page.
-        </p>
+        <EmptyState
+          title="No printers yet"
+          hint="Your fleet will appear here as live status cards. Add printers one at a time or import your whole farm from a CSV — both are on the Settings page."
+          actionLabel="Go to Settings"
+          actionTo="/settings"
+        />
       )}
 
       {Object.entries(grouped).map(([model, group]) => (

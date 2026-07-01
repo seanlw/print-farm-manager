@@ -30,6 +30,15 @@ const CONNECTOR_LABEL = {
 // Connector types that do not use an API key
 const NO_API_KEY_TYPES = new Set(['elegoo-centauri', 'klipper']);
 
+// Per-brand hints on where to find connection credentials
+const CREDENTIAL_HELP = {
+  'prusa':            'API Key: on the printer under Settings → Network → PrusaLink, or in the PrusaLink web UI (open the printer\'s IP in a browser) under Settings → API Key.',
+  'elegoo-centauri':  'No API key needed — just the printer\'s IP address, shown on the printer\'s network settings screen.',
+  'elegoo-centauri2': 'Enable LAN mode on the printer. The Access Code and Serial Number are shown on the printer\'s network settings screen.',
+  'bambu':            'Enable LAN Mode on the printer first. The Access Code is on the printer screen under Settings → WLAN; the Serial Number is under Settings → Device.',
+  'klipper':          'No API key needed — just the IP of the machine running Moonraker. Port 7125 is used automatically.',
+};
+
 export default function Settings() {
   const [showToast, toastEl] = useToast();
   const [confirm, confirmModal] = useConfirm();
@@ -205,11 +214,16 @@ export default function Settings() {
   const [batchSize, setBatchSize] = useState('');
   const [batchSizeError, setBatchSizeError] = useState(null);
 
+  // Farm name — shown in the sidebar; picked up on next page load
+  const [farmName, setFarmName] = useState('');
+  const [farmNameError, setFarmNameError] = useState(null);
+
   useEffect(() => {
     fetch('/api/settings')
       .then(r => r.json())
       .then(data => {
         if (data.dispatch_batch_size) setBatchSize(data.dispatch_batch_size);
+        if (data.farm_name) setFarmName(data.farm_name);
       })
       .catch(() => {});
   }, []);
@@ -227,6 +241,22 @@ export default function Settings() {
       showToast('Saved');
     } catch (err) {
       setBatchSizeError(err.message);
+    }
+  }
+
+  async function handleSaveFarmName() {
+    setFarmNameError(null);
+    try {
+      const res = await fetch('/api/settings/farm_name', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: farmName }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Save failed');
+      showToast('Farm name saved — shown after the next page refresh');
+    } catch (err) {
+      setFarmNameError(err.message);
     }
   }
 
@@ -404,266 +434,6 @@ export default function Settings() {
           ))}
         </section>
       )}
-
-      {/* CSV Import */}
-      <section style={{ background: '#1e2433', borderRadius: 10, padding: 20, marginBottom: 24, maxWidth: 640 }}>
-        <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Import Printer Registry</h2>
-        <p style={{ color: '#64748b', fontSize: 13, marginBottom: 16 }}>
-          Upload a CSV with columns: <code style={{ color: '#94a3b8' }}>name, ip, api_key, group, type</code>.<br />
-          Model is inferred from the printer name. Duplicate names are skipped.
-        </p>
-
-        <form onSubmit={handleImport} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".csv"
-            required
-            style={{
-              background: '#0f172a',
-              border: '1px solid #334155',
-              borderRadius: 6,
-              padding: '6px 10px',
-              color: '#e2e8f0',
-              fontSize: 13,
-              flex: '1 1 200px',
-            }}
-          />
-          <button
-            type="submit"
-            disabled={importing}
-            style={{
-              background: importing ? '#1e40af' : '#2563eb',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 6,
-              padding: '8px 18px',
-              fontSize: 13,
-              fontWeight: 600,
-              cursor: importing ? 'not-allowed' : 'pointer',
-              opacity: importing ? 0.7 : 1,
-            }}
-          >
-            {importing ? 'Importing…' : 'Import CSV'}
-          </button>
-        </form>
-
-        {error && (
-          <div style={{ marginTop: 14, background: '#7f1d1d', borderRadius: 6, padding: '10px 14px', color: '#fca5a5', fontSize: 13 }}>
-            {error}
-          </div>
-        )}
-
-        {result && (
-          <div style={{ marginTop: 14 }}>
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
-              <Chip color="#4ade80" label={`${result.imported} imported`} />
-              <Chip color="#fbbf24" label={`${result.skipped} skipped (duplicates)`} />
-              <Chip color="#f87171" label={`${result.flagged.length} flagged`} />
-            </div>
-
-            {result.flagged.length > 0 && (
-              <div>
-                <p style={{ fontSize: 13, fontWeight: 600, color: '#f87171', marginBottom: 8 }}>
-                  Flagged rows — resolve manually:
-                </p>
-                {result.flagged.map((f, i) => (
-                  <div key={i} style={{
-                    background: '#1a1f2e',
-                    border: '1px solid #7f1d1d',
-                    borderRadius: 6,
-                    padding: '10px 12px',
-                    marginBottom: 8,
-                    fontSize: 13,
-                  }}>
-                    <div style={{ fontWeight: 600, color: '#fca5a5', marginBottom: 4 }}>{f.row.name}</div>
-                    <div style={{ color: '#94a3b8', marginBottom: 8 }}>{f.reason}</div>
-                    {f.reason.includes('Cannot infer model') && (
-                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <select
-                          value={flaggedModels[i] || 'mk4s'}
-                          onChange={(e) => setFlaggedModels((prev) => ({ ...prev, [i]: e.target.value }))}
-                          style={{
-                            background: '#0f172a',
-                            border: '1px solid #334155',
-                            borderRadius: 4,
-                            padding: '4px 8px',
-                            color: '#e2e8f0',
-                            fontSize: 13,
-                          }}
-                        >
-                          {MODEL_OPTIONS.map((m) => <option key={m} value={m}>{m}</option>)}
-                        </select>
-                        <button
-                          onClick={() => handleSaveFlagged(f, flaggedModels[i] || 'mk4s')}
-                          style={{
-                            background: '#15803d',
-                            color: '#fff',
-                            border: 'none',
-                            borderRadius: 4,
-                            padding: '4px 12px',
-                            fontSize: 13,
-                            cursor: 'pointer',
-                          }}
-                        >
-                          Save
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </section>
-
-      {/* Add Single Printer */}
-      <section style={{ background: '#1e2433', borderRadius: 10, padding: 20, marginBottom: 24, maxWidth: 640 }}>
-        <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Add Printer</h2>
-        <p style={{ color: '#64748b', fontSize: 13, marginBottom: 16 }}>
-          Add a single printer directly without a CSV file.
-        </p>
-        <form onSubmit={handleAddPrinter}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>Brand *</label>
-              <select
-                value={addForm.type}
-                onChange={e => {
-                  const t = e.target.value;
-                  const first = allModels.find(m => m.connector === t);
-                  setAddForm(p => ({ ...p, type: t, model: first?.model_id || '', serial_number: '' }));
-                }}
-                style={inputStyle}
-              >
-                {CONNECTOR_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>Model *</label>
-              <select
-                value={addForm.model}
-                onChange={e => setAddForm(p => ({ ...p, model: e.target.value }))}
-                style={inputStyle}
-              >
-                {allModels.filter(m => m.connector === addForm.type).length === 0
-                ? <option value="">— no models configured —</option>
-                : allModels.filter(m => m.connector === addForm.type).map(m => (
-                    <option key={m.model_id} value={m.model_id}>{m.label}</option>
-                  ))}
-              </select>
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>Name *</label>
-              <input
-                value={addForm.name}
-                onChange={e => setAddForm(p => ({ ...p, name: e.target.value }))}
-                required
-                placeholder={addForm.type === 'elegoo-centauri' ? 'Centauri_01' : addForm.type === 'elegoo-centauri2' ? 'CC2_01' : addForm.type === 'bambu' ? 'Bambu_X1C_01' : addForm.type === 'klipper' ? 'Voron_01' : 'MK4S_11'}
-                style={inputStyle}
-              />
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>IP Address *</label>
-              <input
-                value={addForm.ip}
-                onChange={e => setAddForm(p => ({ ...p, ip: e.target.value }))}
-                required
-                placeholder="192.168.1.100"
-                style={inputStyle}
-              />
-            </div>
-            {(addForm.type === 'bambu' || addForm.type === 'elegoo-centauri2') && (
-              <div>
-                <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>Serial Number *</label>
-                <input
-                  value={addForm.serial_number}
-                  onChange={e => setAddForm(p => ({ ...p, serial_number: e.target.value }))}
-                  required
-                  placeholder={addForm.type === 'bambu' ? '00M09C123400789' : 'CC2-XXXXXX'}
-                  style={inputStyle}
-                />
-              </div>
-            )}
-            {!NO_API_KEY_TYPES.has(addForm.type) && (
-              <div>
-                <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>
-                  {addForm.type === 'bambu' || addForm.type === 'elegoo-centauri2' ? 'Access Code *' : 'API Key *'}
-                </label>
-                <input
-                  value={addForm.api_key}
-                  onChange={e => setAddForm(p => ({ ...p, api_key: e.target.value }))}
-                  required
-                  placeholder={addForm.type === 'bambu' || addForm.type === 'elegoo-centauri2' ? 'SQdQfo' : 'xxxxxxxxxxxxxxxx'}
-                  style={inputStyle}
-                />
-              </div>
-            )}
-            <div>
-              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>Group (optional)</label>
-              <input
-                value={addForm.group_name}
-                onChange={e => setAddForm(p => ({ ...p, group_name: e.target.value }))}
-                placeholder="Rack A"
-                style={inputStyle}
-              />
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>Loaded Material</label>
-              <select
-                value={addForm.loaded_material}
-                onChange={e => setAddForm(p => ({ ...p, loaded_material: e.target.value, loaded_color: '' }))}
-                style={inputStyle}
-              >
-                <option value="">— none —</option>
-                {filamentTypes.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>Loaded Color</label>
-              <select
-                value={addForm.loaded_color}
-                onChange={e => setAddForm(p => ({ ...p, loaded_color: e.target.value }))}
-                disabled={!addForm.loaded_material}
-                style={inputStyle}
-              >
-                <option value="">— none —</option>
-                {filamentColors
-                  .filter(c => c.type_name === addForm.loaded_material)
-                  .map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-              </select>
-            </div>
-          </div>
-          <button
-            type="submit"
-            disabled={adding}
-            style={{
-              background: adding ? '#1e40af' : '#2563eb',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 6,
-              padding: '8px 18px',
-              fontSize: 13,
-              fontWeight: 600,
-              cursor: adding ? 'not-allowed' : 'pointer',
-              opacity: adding ? 0.7 : 1,
-            }}
-          >
-            {adding ? 'Adding…' : 'Add Printer'}
-          </button>
-        </form>
-        {addError && (
-          <div style={{ marginTop: 14, background: '#7f1d1d', borderRadius: 6, padding: '10px 14px', color: '#fca5a5', fontSize: 13 }}>
-            {addError}
-          </div>
-        )}
-        {addResult && (
-          <div style={{ marginTop: 14, background: '#14532d', borderRadius: 6, padding: '10px 14px', color: '#4ade80', fontSize: 13 }}>
-            Printer <strong>{addResult.name}</strong> added (ID #{addResult.id}).
-          </div>
-        )}
-      </section>
 
       {/* Printer Models */}
       <section style={{ background: '#1e2433', borderRadius: 10, padding: 20, marginBottom: 24, maxWidth: 640 }}>
@@ -909,6 +679,309 @@ export default function Settings() {
           </button>
         </form>
         {colorFormError && <div style={{ marginTop: 8, color: '#fca5a5', fontSize: 13 }}>{colorFormError}</div>}
+      </section>
+
+      {/* Add Single Printer */}
+      <section style={{ background: '#1e2433', borderRadius: 10, padding: 20, marginBottom: 24, maxWidth: 640 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Add Printer</h2>
+        <p style={{ color: '#64748b', fontSize: 13, marginBottom: 12 }}>
+          Add a single printer directly without a CSV file.
+        </p>
+        <div style={{
+          background: '#16213a',
+          borderLeft: '3px solid #2563eb',
+          borderRadius: 6,
+          padding: '8px 12px',
+          fontSize: 12.5,
+          color: '#94a3b8',
+          marginBottom: 16,
+          lineHeight: 1.5,
+        }}>
+          {CREDENTIAL_HELP[addForm.type]}
+        </div>
+        <form onSubmit={handleAddPrinter}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>Brand *</label>
+              <select
+                value={addForm.type}
+                onChange={e => {
+                  const t = e.target.value;
+                  const first = allModels.find(m => m.connector === t);
+                  setAddForm(p => ({ ...p, type: t, model: first?.model_id || '', serial_number: '' }));
+                }}
+                style={inputStyle}
+              >
+                {CONNECTOR_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>Model *</label>
+              <select
+                value={addForm.model}
+                onChange={e => setAddForm(p => ({ ...p, model: e.target.value }))}
+                style={inputStyle}
+              >
+                {allModels.filter(m => m.connector === addForm.type).length === 0
+                ? <option value="">— no models configured —</option>
+                : allModels.filter(m => m.connector === addForm.type).map(m => (
+                    <option key={m.model_id} value={m.model_id}>{m.label}</option>
+                  ))}
+              </select>
+              {allModels.filter(m => m.connector === addForm.type).length === 0 && (
+                <div style={{ fontSize: 11.5, color: '#fbbf24', marginTop: 4 }}>
+                  No models for this brand yet — add one in Printer Models above first.
+                </div>
+              )}
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>Name *</label>
+              <input
+                value={addForm.name}
+                onChange={e => setAddForm(p => ({ ...p, name: e.target.value }))}
+                required
+                placeholder={addForm.type === 'elegoo-centauri' ? 'Centauri_01' : addForm.type === 'elegoo-centauri2' ? 'CC2_01' : addForm.type === 'bambu' ? 'Bambu_X1C_01' : addForm.type === 'klipper' ? 'Voron_01' : 'MK4S_11'}
+                style={inputStyle}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>IP Address *</label>
+              <input
+                value={addForm.ip}
+                onChange={e => setAddForm(p => ({ ...p, ip: e.target.value }))}
+                required
+                placeholder="192.168.1.100"
+                style={inputStyle}
+              />
+            </div>
+            {(addForm.type === 'bambu' || addForm.type === 'elegoo-centauri2') && (
+              <div>
+                <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>Serial Number *</label>
+                <input
+                  value={addForm.serial_number}
+                  onChange={e => setAddForm(p => ({ ...p, serial_number: e.target.value }))}
+                  required
+                  placeholder={addForm.type === 'bambu' ? '00M09C123400789' : 'CC2-XXXXXX'}
+                  style={inputStyle}
+                />
+              </div>
+            )}
+            {!NO_API_KEY_TYPES.has(addForm.type) && (
+              <div>
+                <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>
+                  {addForm.type === 'bambu' || addForm.type === 'elegoo-centauri2' ? 'Access Code *' : 'API Key *'}
+                </label>
+                <input
+                  value={addForm.api_key}
+                  onChange={e => setAddForm(p => ({ ...p, api_key: e.target.value }))}
+                  required
+                  placeholder={addForm.type === 'bambu' || addForm.type === 'elegoo-centauri2' ? 'SQdQfo' : 'xxxxxxxxxxxxxxxx'}
+                  style={inputStyle}
+                />
+              </div>
+            )}
+            <div>
+              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>Group (optional)</label>
+              <input
+                value={addForm.group_name}
+                onChange={e => setAddForm(p => ({ ...p, group_name: e.target.value }))}
+                placeholder="Rack A"
+                style={inputStyle}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>Loaded Material</label>
+              <select
+                value={addForm.loaded_material}
+                onChange={e => setAddForm(p => ({ ...p, loaded_material: e.target.value, loaded_color: '' }))}
+                style={inputStyle}
+              >
+                <option value="">— none —</option>
+                {filamentTypes.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>Loaded Color</label>
+              <select
+                value={addForm.loaded_color}
+                onChange={e => setAddForm(p => ({ ...p, loaded_color: e.target.value }))}
+                disabled={!addForm.loaded_material}
+                style={inputStyle}
+              >
+                <option value="">— none —</option>
+                {filamentColors
+                  .filter(c => c.type_name === addForm.loaded_material)
+                  .map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+              </select>
+            </div>
+          </div>
+          <button
+            type="submit"
+            disabled={adding}
+            style={{
+              background: adding ? '#1e40af' : '#2563eb',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 6,
+              padding: '8px 18px',
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: adding ? 'not-allowed' : 'pointer',
+              opacity: adding ? 0.7 : 1,
+            }}
+          >
+            {adding ? 'Adding…' : 'Add Printer'}
+          </button>
+        </form>
+        {addError && (
+          <div style={{ marginTop: 14, background: '#7f1d1d', borderRadius: 6, padding: '10px 14px', color: '#fca5a5', fontSize: 13 }}>
+            {addError}
+          </div>
+        )}
+        {addResult && (
+          <div style={{ marginTop: 14, background: '#14532d', borderRadius: 6, padding: '10px 14px', color: '#4ade80', fontSize: 13 }}>
+            Printer <strong>{addResult.name}</strong> added (ID #{addResult.id}).
+          </div>
+        )}
+      </section>
+
+      {/* CSV Import */}
+      <section style={{ background: '#1e2433', borderRadius: 10, padding: 20, marginBottom: 24, maxWidth: 640 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Import Printer Registry</h2>
+        <p style={{ color: '#64748b', fontSize: 13, marginBottom: 16 }}>
+          Upload a CSV with columns: <code style={{ color: '#94a3b8' }}>name, ip, api_key, group, type</code>.<br />
+          Model is inferred from the printer name. Duplicate names are skipped.
+        </p>
+
+        <form onSubmit={handleImport} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv"
+            required
+            style={{
+              background: '#0f172a',
+              border: '1px solid #334155',
+              borderRadius: 6,
+              padding: '6px 10px',
+              color: '#e2e8f0',
+              fontSize: 13,
+              flex: '1 1 200px',
+            }}
+          />
+          <button
+            type="submit"
+            disabled={importing}
+            style={{
+              background: importing ? '#1e40af' : '#2563eb',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 6,
+              padding: '8px 18px',
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: importing ? 'not-allowed' : 'pointer',
+              opacity: importing ? 0.7 : 1,
+            }}
+          >
+            {importing ? 'Importing…' : 'Import CSV'}
+          </button>
+        </form>
+
+        {error && (
+          <div style={{ marginTop: 14, background: '#7f1d1d', borderRadius: 6, padding: '10px 14px', color: '#fca5a5', fontSize: 13 }}>
+            {error}
+          </div>
+        )}
+
+        {result && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+              <Chip color="#4ade80" label={`${result.imported} imported`} />
+              <Chip color="#fbbf24" label={`${result.skipped} skipped (duplicates)`} />
+              <Chip color="#f87171" label={`${result.flagged.length} flagged`} />
+            </div>
+
+            {result.flagged.length > 0 && (
+              <div>
+                <p style={{ fontSize: 13, fontWeight: 600, color: '#f87171', marginBottom: 8 }}>
+                  Flagged rows — resolve manually:
+                </p>
+                {result.flagged.map((f, i) => (
+                  <div key={i} style={{
+                    background: '#1a1f2e',
+                    border: '1px solid #7f1d1d',
+                    borderRadius: 6,
+                    padding: '10px 12px',
+                    marginBottom: 8,
+                    fontSize: 13,
+                  }}>
+                    <div style={{ fontWeight: 600, color: '#fca5a5', marginBottom: 4 }}>{f.row.name}</div>
+                    <div style={{ color: '#94a3b8', marginBottom: 8 }}>{f.reason}</div>
+                    {f.reason.includes('Cannot infer model') && (
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <select
+                          value={flaggedModels[i] || allModels[0]?.model_id || ''}
+                          onChange={(e) => setFlaggedModels((prev) => ({ ...prev, [i]: e.target.value }))}
+                          style={{
+                            background: '#0f172a',
+                            border: '1px solid #334155',
+                            borderRadius: 4,
+                            padding: '4px 8px',
+                            color: '#e2e8f0',
+                            fontSize: 13,
+                          }}
+                        >
+                          {allModels.map((m) => <option key={m.model_id} value={m.model_id}>{m.label}</option>)}
+                        </select>
+                        <button
+                          onClick={() => handleSaveFlagged(f, flaggedModels[i] || allModels[0]?.model_id || '')}
+                          style={{
+                            background: '#15803d',
+                            color: '#fff',
+                            border: 'none',
+                            borderRadius: 4,
+                            padding: '4px 12px',
+                            fontSize: 13,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Save
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* Farm Name */}
+      <section style={{ background: '#1e2433', borderRadius: 10, padding: 20, marginBottom: 24, maxWidth: 640 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Farm Name</h2>
+        <p style={{ color: '#64748b', fontSize: 13, marginBottom: 16 }}>
+          Shown in the sidebar. Name your farm — or leave blank for the default.
+        </p>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            value={farmName}
+            onChange={e => setFarmName(e.target.value)}
+            placeholder="My Print Farm"
+            maxLength={40}
+            style={{ ...inputStyle, width: 240 }}
+          />
+          <button
+            onClick={handleSaveFarmName}
+            style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+          >
+            Save
+          </button>
+        </div>
+        {farmNameError && (
+          <div style={{ marginTop: 10, color: '#fca5a5', fontSize: 13 }}>{farmNameError}</div>
+        )}
       </section>
 
       {/* Dispatch Settings */}

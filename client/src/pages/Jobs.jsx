@@ -1,13 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useConfirm } from '../useConfirm';
+import EmptyState from '../components/EmptyState';
 
+// Colors match the Fleet page conventions: blue = printing, green = done.
+// Cancelled gets a line-through as a non-color cue against Queued.
 const JOB_STATUS = {
   queued:    { bg: '#1f2937', text: '#9ca3af', label: 'Queued' },
-  uploading: { bg: '#1e3a5f', text: '#60a5fa', label: 'Uploading' },
-  printing:  { bg: '#166534', text: '#4ade80', label: 'Printing' },
+  uploading: { bg: '#3b2c69', text: '#a78bfa', label: 'Uploading' },
+  printing:  { bg: '#1e3a5f', text: '#60a5fa', label: 'Printing' },
   finished:  { bg: '#14532d', text: '#86efac', label: 'Finished' },
   failed:    { bg: '#7f1d1d', text: '#f87171', label: 'Failed' },
-  cancelled: { bg: '#111827', text: '#6b7280', label: 'Cancelled' },
+  cancelled: { bg: '#111827', text: '#6b7280', label: 'Cancelled', strike: true },
 };
 
 const STATUS_OPTIONS = ['all', 'queued', 'uploading', 'printing', 'finished', 'failed', 'cancelled'];
@@ -44,9 +48,19 @@ export default function Jobs() {
   const [projects, setProjects]   = useState([]);
   const [printers, setPrinters]   = useState([]);
 
-  const [statusFilter, setStatus]   = useState('all');
-  const [projectFilter, setProject] = useState('');
-  const [printerFilter, setPrinter] = useState('');
+  // Filters live in the URL so they survive reloads and can be shared/bookmarked
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [statusFilter, setStatus]   = useState(searchParams.get('status') || 'all');
+  const [projectFilter, setProject] = useState(searchParams.get('project') || '');
+  const [printerFilter, setPrinter] = useState(searchParams.get('printer') || '');
+
+  useEffect(() => {
+    const next = {};
+    if (statusFilter !== 'all') next.status = statusFilter;
+    if (projectFilter)          next.project = projectFilter;
+    if (printerFilter)          next.printer = printerFilter;
+    setSearchParams(next, { replace: true });
+  }, [statusFilter, projectFilter, printerFilter, setSearchParams]);
 
   const fetchJobs = useCallback(async () => {
     const params = new URLSearchParams();
@@ -119,11 +133,64 @@ export default function Jobs() {
 
       {loading && <p style={{ color: '#64748b' }}>Loading…</p>}
       {!loading && jobs.length === 0 && (
-        <p style={{ color: '#64748b' }}>No jobs match the current filters.</p>
+        statusFilter !== 'all' || projectFilter || printerFilter ? (
+          <p style={{ color: '#64748b' }}>No jobs match the current filters — try clearing them.</p>
+        ) : (
+          <EmptyState
+            title="No jobs yet"
+            hint="Jobs are created automatically: when a project is Active and one of its parts has G-code uploaded, the scheduler dispatches jobs to idle printers of the matching model. If you expected a job here, check that the project is Active and a matching printer is idle (not held or decommissioned)."
+            actionLabel="Go to Projects"
+            actionTo="/projects"
+          />
+        )
+      )}
+
+      {/* Below 700px the table collapses to stacked cards */}
+      <style>{`
+        .jobs-cards { display: none; }
+        @media (max-width: 700px) {
+          .jobs-table-wrap { display: none; }
+          .jobs-cards { display: flex; flex-direction: column; gap: 8px; }
+        }
+      `}</style>
+
+      {jobs.length > 0 && (
+        <div className="jobs-cards">
+          {jobs.map(job => {
+            const st = JOB_STATUS[job.status] || { bg: '#1f2937', text: '#9ca3af', label: job.status };
+            return (
+              <div key={job.id} style={{ background: '#1e2433', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#cbd5e1' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{job.part_name}</span>
+                  <span style={{ background: st.bg, color: st.text, borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 700, flexShrink: 0, textDecoration: st.strike ? 'line-through' : 'none' }}>
+                    {st.label}
+                  </span>
+                </div>
+                <div style={{ color: '#94a3b8', fontSize: 12, marginBottom: 2 }}>
+                  {job.project_name} · {job.printer_name} <span style={{ color: '#64748b', fontFamily: 'monospace', fontSize: 11 }}>({job.printer_model})</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#64748b', fontSize: 12 }}>
+                  <span>
+                    {formatTime(job.started_at)}
+                    {job.started_at && <> · {formatDuration(job.started_at, job.finished_at || null)}</>}
+                  </span>
+                  {job.status === 'queued' && (
+                    <button
+                      onClick={() => cancelJob(job.id)}
+                      style={{ background: '#7f1d1d', color: '#f87171', border: 'none', borderRadius: 4, padding: '5px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       )}
 
       {jobs.length > 0 && (
-        <div style={{ overflowX: 'auto' }}>
+        <div className="jobs-table-wrap" style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ color: '#64748b', textAlign: 'left', borderBottom: '1px solid #2d3748' }}>
@@ -161,7 +228,7 @@ export default function Jobs() {
                       </span>
                     </td>
                     <td style={{ padding: '8px 10px' }}>
-                      <span style={{ background: st.bg, color: st.text, borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 700 }}>
+                      <span style={{ background: st.bg, color: st.text, borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 700, textDecoration: st.strike ? 'line-through' : 'none' }}>
                         {st.label}
                       </span>
                     </td>

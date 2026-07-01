@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
 import Dashboard from './pages/Dashboard';
 import Fleet from './pages/Fleet';
@@ -32,6 +33,15 @@ const navLinkStyle = ({ isActive }) => ({
 });
 
 export default function App() {
+  // Operator-configurable farm name (Settings → Farm Name)
+  const [farmName, setFarmName] = useState('Print Farm');
+  useEffect(() => {
+    fetch('/api/settings')
+      .then(r => r.json())
+      .then(data => { if (data.farm_name) setFarmName(data.farm_name); })
+      .catch(() => {});
+  }, []);
+
   return (
     <BrowserRouter>
       {/* Responsive layout: sidebar on desktop, top nav bar on mobile */}
@@ -52,7 +62,7 @@ export default function App() {
         {/* Sidebar (desktop) */}
         <nav id="sidebar">
           <div style={{ padding: '0 6px 16px', borderBottom: '1px solid #1e2433', marginBottom: 8 }}>
-            <div style={{ fontWeight: 800, fontSize: 15, color: '#e2e8f0', lineHeight: 1.3 }}>3DPN</div>
+            <div style={{ fontWeight: 800, fontSize: 15, color: '#e2e8f0', lineHeight: 1.3 }}>{farmName}</div>
             <div style={{ fontWeight: 400, fontSize: 11, color: '#475569' }}>Print Farm Manager</div>
           </div>
           {NAV_ITEMS.map((item) => (
@@ -64,7 +74,7 @@ export default function App() {
 
         {/* Top nav bar (mobile) */}
         <nav id="topbar">
-          <span style={{ fontWeight: 800, fontSize: 14, color: '#e2e8f0', marginRight: 8 }}>3DPN</span>
+          <span style={{ fontWeight: 800, fontSize: 14, color: '#e2e8f0', marginRight: 8 }}>{farmName}</span>
           {NAV_ITEMS.map((item) => (
             <NavLink
               key={item.to}

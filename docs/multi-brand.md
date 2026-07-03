@@ -1,6 +1,8 @@
 # Multi-Brand Printer Support
 
 > **Phase 6C added (2026-04-20).** Klipper (Moonraker) connector complete — covers Voron and all Klipper-firmware printers. Prusa Link, Elegoo SDCP, Bambu, and Klipper are all fully supported.
+>
+> **Phase 6D added (2026-07-03).** OctoPrint connector complete — covers any printer running OctoPrint/OctoPi (Prusa, Ender, Voron, or otherwise), via OctoPrint's own REST API rather than the printer firmware's native protocol.
 
 ## Overview
 
@@ -68,8 +70,9 @@ Each connector family covers all printer models that share the same protocol:
 | **Prusa Link** | PrusaLink REST API (HTTP polling) | MK4, XL, and any future Prusa models |
 | **Elegoo SDCP** | SDCP WebSocket V3.0.0 (port 3030) | Centauri Carbon, Centauri Carbon 2 |
 | **Klipper (Moonraker)** | Moonraker REST API (HTTP polling, port 7125) | Voron and any Klipper-firmware printer |
+| **OctoPrint** | OctoPrint REST API (HTTP polling, operator-supplied port) | Any printer running OctoPrint/OctoPi |
 
-The `printer.type` DB column stores the connector identifier (`prusa`, `elegoo-centauri`, `bambu`, or `klipper`). The model column (`centauri-carbon`, etc.) is used only for display grouping in the UI.
+The `printer.type` DB column stores the connector identifier (`prusa`, `elegoo-centauri`, `bambu`, `klipper`, or `octoprint`). The model column (`centauri-carbon`, etc.) is used only for display grouping in the UI.
 
 ---
 
@@ -148,6 +151,20 @@ Uses the `sdcp` npm package (blakejrobinson) which wraps the SDCP WebSocket prot
 - [RemmyLee/carbon](https://github.com/RemmyLee/carbon) — developer documentation for SDCP
 
 ---
+
+## OctoPrint Notes
+
+OctoPrint is a plain HTTP REST API (no persistent connection, `X-Api-Key` auth), so `server/drivers/octoprint.js` follows the Prusa/Klipper stateless-polling pattern rather than the Elegoo/Bambu persistent-connection pattern.
+
+- `GET /api/printer` → `state.flags` (`operational`, `printing`, `paused`, `pausing`, `cancelling`, `error`, `closedOrError`) is the canonical status source.
+- `GET /api/job` → `progress.completion` (0–100), `progress.printTimeLeft` (seconds), `job.file.name` supply progress and the current filename.
+- Upload: `POST /api/files/local` (multipart) with `select=true` and `print=true` form fields — uploads and starts the print in one call, unlike PrusaLink (separate header) or Moonraker (separate `print` field only).
+- Cancel: `POST /api/job` with `{"command": "cancel"}` — actually implemented (unlike Prusa's stub, since OctoPrint exposes a reliable cancel endpoint).
+- No dedicated port field: OctoPrint commonly runs on `:5000` rather than `:80`, so the operator includes the port directly in the `ip` field (e.g. `192.168.1.50:5000`), same as how Prusa's `ip` field already accepts a host:port pair.
+
+### FINISHED detection
+
+Unlike PrusaLink (`FINISHED` state) or Moonraker (`complete` state), OctoPrint has no persistent "just completed" flag — after a print finishes it reports the same `operational` flags as a printer that never printed. The driver detects completion by combining flags with the job endpoint: not printing/paused, a job file is still loaded, and `progress.completion === 100`. This condition clears itself once the next print starts (completion resets), and `poller.js` only reacts to it once since it only fires `statusChange` on a DB status transition — so no additional per-printer state needs to live in the driver.
 
 ## G-Code Filename Parsing
 

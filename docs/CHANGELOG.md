@@ -12,6 +12,32 @@ The Elegoo Centauri Carbon 2 driver originally uploaded files by having the prin
 
 ---
 
+## 2026-07-03 — OctoPrint connector (Phase 6D)
+
+Added OctoPrint as a supported "Add Printer" brand, following the driver abstraction from Phase 6A. Covers any printer managed by OctoPrint/OctoPi (not brand-specific — a Prusa, Ender, or Voron all look the same to the farm manager once behind OctoPrint's REST API).
+
+`server/drivers/octoprint.js` implements the shared driver interface (`getStatus`, `uploadAndPrint`, `cancelJob`, `checkIfPrinting`) against OctoPrint's REST API (`X-Api-Key` auth, plain HTTP polling — same stateless pattern as `prusa.js`/`klipper.js`, no persistent connection needed):
+
+- Status: `GET /api/printer` (`state.flags`) + `GET /api/job` (`progress.completion`, `progress.printTimeLeft`, `job.file.name`).
+- Upload: `POST /api/files/local` (multipart) with `select=true` and `print=true` — uploads and starts the print in a single call. A 409 (file mid-print) maps to `UPLOAD_CONFLICT`, same retry/backoff handling as Prusa.
+- Cancel: `POST /api/job` `{"command":"cancel"}` — actually implemented, unlike PrusaLink's stub, since OctoPrint exposes a working cancel endpoint.
+- FINISHED detection required a heuristic: OctoPrint doesn't hold a persistent "just completed" state like PrusaLink/Moonraker, so the driver infers it from not-printing + a loaded job file + `completion === 100`. Documented in `docs/multi-brand.md`.
+- No dedicated port field added — OctoPrint commonly runs on `:5000` rather than `:80`, so the operator includes the port in the existing `ip` field (e.g. `192.168.1.50:5000`), same as Prusa's `ip` field already supports.
+
+### Changes
+- `server/drivers/octoprint.js` (new): driver implementation.
+- `server/drivers/index.js`: registered `'octoprint'` in the driver `LOADERS` map.
+- `server/routes/models.js`: added `'octoprint'` to `VALID_CONNECTORS`.
+- `client/src/pages/Settings.jsx`: added OctoPrint to the brand dropdown, credential help text, and name placeholder. No change needed to `NO_API_KEY_TYPES` — OctoPrint requires a real API key.
+- `server/tests/octoprint-driver.test.js` (new): 21 tests covering status mapping (including the FINISHED heuristic), upload conflict handling, cancel, and driver registry lookup.
+- `docs/multi-brand.md`, `docs/README.md`: documented the new connector.
+
+No DB schema changes and no changes to `Fleet.jsx`/`Dashboard.jsx` — both already derive brand/model display purely from the `printer_models` table (`connector` + `model_id`), which is populated via the existing Settings → Printer Models UI. No new npm dependencies — reuses `axios` and `form-data`, already present for the Klipper driver.
+
+Verified in a `node:22-bookworm-slim` container (matching the project's Docker base image) rather than the host: full server test suite passes (378 tests, including the 21 new OctoPrint driver tests).
+
+---
+
 ## 2026-07-03 — Docker production deployment
 
 Added a container-based path to run the app in production, as an alternative to the bare-metal + PM2 setup. Requested to simplify deployment (no host Node.js/build-tooling install, consistent environment across machines) without changing any Phase 1 conventions — no DB migration system was introduced, and the SQLite/`better-sqlite3` synchronous-API convention is unaffected since the container just runs the existing `server/index.js` entry point.

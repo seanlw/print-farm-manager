@@ -19,6 +19,7 @@ const CONNECTOR_OPTIONS = [
   { value: 'elegoo-centauri2', label: 'Elegoo CC2 (MQTT)' },
   { value: 'bambu',            label: 'Bambu (MQTT)' },
   { value: 'klipper',          label: 'Klipper (Moonraker)' },
+  { value: 'octoprint',        label: 'OctoPrint' },
 ];
 const CONNECTOR_LABEL = {
   'prusa':            'Prusa (PrusaLink)',
@@ -26,6 +27,7 @@ const CONNECTOR_LABEL = {
   'elegoo-centauri2': 'Elegoo CC2 (MQTT)',
   'bambu':            'Bambu (MQTT)',
   'klipper':          'Klipper (Moonraker)',
+  'octoprint':        'OctoPrint',
 };
 // Connector types that do not use an API key
 const NO_API_KEY_TYPES = new Set(['elegoo-centauri', 'klipper']);
@@ -37,6 +39,7 @@ const CREDENTIAL_HELP = {
   'elegoo-centauri2': 'Enable LAN mode on the printer. The Access Code and Serial Number are shown on the printer\'s network settings screen.',
   'bambu':            'Enable LAN Mode on the printer first. The Access Code is on the printer screen under Settings → WLAN; the Serial Number is under Settings → Device.',
   'klipper':          'No API key needed — just the IP of the machine running Moonraker. Port 7125 is used automatically.',
+  'octoprint':        'API Key: in OctoPrint under Settings → API. If OctoPrint isn\'t on port 80 (commonly :5000), include the port in the IP field, e.g. 192.168.1.50:5000.',
 };
 
 export default function Settings() {
@@ -752,7 +755,7 @@ export default function Settings() {
                 value={addForm.name}
                 onChange={e => setAddForm(p => ({ ...p, name: e.target.value }))}
                 required
-                placeholder={addForm.type === 'elegoo-centauri' ? 'Centauri_01' : addForm.type === 'elegoo-centauri2' ? 'CC2_01' : addForm.type === 'bambu' ? 'Bambu_X1C_01' : addForm.type === 'klipper' ? 'Voron_01' : 'MK4S_11'}
+                placeholder={addForm.type === 'elegoo-centauri' ? 'Centauri_01' : addForm.type === 'elegoo-centauri2' ? 'CC2_01' : addForm.type === 'bambu' ? 'Bambu_X1C_01' : addForm.type === 'klipper' ? 'Voron_01' : addForm.type === 'octoprint' ? 'OctoPi_01' : 'MK4S_11'}
                 style={inputStyle}
               />
             </div>

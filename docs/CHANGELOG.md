@@ -14,6 +14,13 @@ Fixed both ends: `POST /api/parts` now reactivates a `completed` parent project 
 - `server/routes/parts.js`: `POST /` reactivates the parent project if it's `completed`.
 - `server/routes/projects.js`: `POST /:id/reactivate` also checks for open parts with `completed_qty < target_qty`.
 - `server/tests/parts-sort.test.js`, `server/tests/projects-status.test.js`: added coverage for both.
+## 2026-07-04 — CI: gate Docker publishing on the test suite
+
+`.github/workflows/docker-publish.yml` could previously publish an image even if `server/tests/` was failing — nothing ran the suite. Added a `test` job (`npm ci` + `npm test` on `ubuntu-24.04`) that both `build` and the PR-only `pr_test_build` job now declare as a dependency (`needs: test`), so a red test suite blocks any image build, published or not. `merge` remains gated transitively via `needs: build`.
+
+### Changes
+- `.github/workflows/docker-publish.yml`: added the `test` job; `build` and `pr_test_build` now `needs: test`.
+- `docs/docker-publish.md`: documented the test gate and updated the job breakdown.
 
 ---
 

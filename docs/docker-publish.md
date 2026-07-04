@@ -10,8 +10,13 @@
 |---|---|
 | Push to `main` | Rebuilds and republishes the `latest`/`edge` tag |
 | Push of a `v*` tag (e.g. `v1.2.0`) | Publishes semver tags (`1.2.0`, `1.2`) |
+| Pull request targeting `main` | Runs the test suite and a build-only validation on both architectures — never touches GHCR |
 | Daily schedule (`0 3 * * *`) | Rebuilds on top of the latest `node:22-bookworm-slim` base image, so security patches land even with no app changes |
 | `workflow_dispatch` | Manual run from the Actions tab |
+
+## Test gate
+
+Every trigger — including PRs — runs the `test` job first: `npm ci` + `npm test` (the Jest suite in `server/tests/`) on `ubuntu-24.04`. Both `build` and `pr_test_build` declare `needs: test`, so a failing test suite blocks any image from being built at all, published or not. `merge` in turn depends on `build`, so the whole publish path is transitively gated on tests passing.
 
 ## Why native ARM runners instead of QEMU
 
@@ -36,19 +41,30 @@ Tag rules come from `docker/metadata-action` in the `merge` job:
 ## Jobs
 
 ```
-build (matrix: amd64, arm64)
+test (runs on every trigger)
+  1. Checkout
+  2. Set up Node.js 22
+  3. npm ci
+  4. npm test — Jest suite in server/tests/
+
+build (needs: test; matrix: amd64, arm64; skipped on pull_request)
   1. Checkout
   2. Set up Buildx
   3. Log in to GHCR (GITHUB_TOKEN — no PAT needed)
   4. Build + push image by digest (no tag yet)
   5. Export the digest to /tmp/digests and upload as an artifact
 
-merge (needs: build)
+merge (needs: build; skipped whenever build is skipped, e.g. on pull_request)
   1. Download both digest artifacts into /tmp/digests
   2. Set up Buildx, log in to GHCR
   3. Compute tags via docker/metadata-action
   4. docker buildx imagetools create — assembles the multi-arch manifest list, applies tags, pushes
   5. docker buildx imagetools inspect — sanity-check the pushed manifest
+
+pr_test_build (needs: test; matrix: amd64, arm64; only on pull_request)
+  1. Checkout
+  2. Set up Buildx
+  3. Build for each platform with push: false — validates the Dockerfile builds cleanly on both architectures, publishes nothing, needs no GHCR credentials
 ```
 
 ## Permissions

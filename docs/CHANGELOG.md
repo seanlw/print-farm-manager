@@ -2,6 +2,16 @@
 
 ---
 
+## 2026-07-04 — CI: gate Docker publishing on the test suite
+
+`.github/workflows/docker-publish.yml` could previously publish an image even if `server/tests/` was failing — nothing ran the suite. Added a `test` job (`npm ci` + `npm test` on `ubuntu-24.04`) that both `build` and the PR-only `pr_test_build` job now declare as a dependency (`needs: test`), so a red test suite blocks any image build, published or not. `merge` remains gated transitively via `needs: build`.
+
+### Changes
+- `.github/workflows/docker-publish.yml`: added the `test` job; `build` and `pr_test_build` now `needs: test`.
+- `docs/docker-publish.md`: documented the test gate and updated the job breakdown.
+
+---
+
 ## 2026-07-03 — README + install guide caught up to the OctoPrint connector
 
 PR #4 added the OctoPrint driver with full docs coverage in `multi-brand.md` but did not touch the two user-facing entry docs. Synced them: README gains an OctoPrint row in Supported Printers, `octoprint` in the CSV `type` list, corrected `api_key` requirements, and the full six-driver list in Project Structure (`elegoo-centauri2.js` and `octoprint.js` were missing); `docs/installation.md` credential table gains an OctoPrint row (API key from **Settings → API**, port included in the IP field, e.g. `:5000`).

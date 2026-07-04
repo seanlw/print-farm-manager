@@ -2,6 +2,21 @@
 
 ---
 
+## 2026-07-04 — Fix: adding a part to a completed project couldn't be reactivated
+
+Reported: adding a new part to a project that had already completed left the project stuck — clicking Re-activate returned "All parts are at target qty — adjust quantities first" even though the new part clearly had remaining qty (0/1).
+
+Root cause: `POST /api/parts` never checked the parent project's status when inserting a new part, unlike `PUT /api/parts/:id` which already reactivates a completed project when a part transitions from closed back to open. A brand-new part always starts `open` with `completed_qty = 0`, so it never goes through that transition — the project was left `completed` with a genuinely unmet part sitting in it. `POST /api/projects/:id/reactivate` then only checked for *closed* parts with remaining qty, so it saw nothing eligible and reported `nothing_to_reopen`.
+
+Fixed both ends: `POST /api/parts` now reactivates a `completed` parent project the same way the PUT handler does, and `POST /api/projects/:id/reactivate` now also counts already-open parts with remaining qty (not just closed ones) so it can't wrongly report nothing-to-reopen in any similar situation.
+
+### Changes
+- `server/routes/parts.js`: `POST /` reactivates the parent project if it's `completed`.
+- `server/routes/projects.js`: `POST /:id/reactivate` also checks for open parts with `completed_qty < target_qty`.
+- `server/tests/parts-sort.test.js`, `server/tests/projects-status.test.js`: added coverage for both.
+
+---
+
 ## 2026-07-04 — Farm Backup: fix missing printer models, filament library, and settings
 
 `GET /api/backup` never included `printer_models`, `filament_types`, `filament_colors`, or `settings` — only `printers`, `projects`, `parts`, `gcodes`, `jobs`, and `printer_events`. Restoring a backup brought printers back with a `model` referencing a `printer_models` row that no longer existed, so those printers couldn't be edited or matched by new Add Printer submissions until the operator manually re-added every model (and re-entered the farm's filament library and farm name/dispatch batch size) by hand.

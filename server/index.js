@@ -47,6 +47,11 @@ const PORT = process.env.PORT || 3000;
 // - hsts is disabled — this app is served over plain HTTP on the LAN (see README), and
 //   browsers ignore Strict-Transport-Security entirely when it's not delivered over
 //   HTTPS anyway, so sending it here is just misleading noise, not a real protection.
+// - upgradeInsecureRequests is explicitly disabled for the same reason: Helmet's CSP
+//   defaults include the `upgrade-insecure-requests` directive unless told otherwise.
+//   On the documented plain-HTTP LAN deployment, a browser enforcing that directive can
+//   try to upgrade same-origin asset/API requests to HTTPS — which nothing here serves —
+//   breaking the app entirely.
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -60,6 +65,7 @@ app.use(helmet({
       baseUri: ["'self'"],
       formAction: ["'self'"],
       frameAncestors: ["'none'"],
+      upgradeInsecureRequests: null,
     },
   },
   crossOriginEmbedderPolicy: false,

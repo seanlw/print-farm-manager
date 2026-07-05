@@ -11,15 +11,19 @@ Added `helmet` and configured it deliberately rather than taking its defaults, s
 - `style-src`/`font-src` allow `fonts.googleapis.com`/`fonts.gstatic.com` for the Inter/Fira Code font import in `client/src/index.css`.
 - `crossOriginEmbedderPolicy` is disabled — Google Fonts doesn't send the CORP header `COEP: require-corp` needs, so leaving helmet's default on would have silently broken font loading. This app has no need for cross-origin isolation (no `SharedArrayBuffer` usage).
 - `hsts` is disabled — this app is served over plain HTTP on the LAN (see README); browsers ignore `Strict-Transport-Security` entirely when it's not delivered over HTTPS, so sending it is just misleading noise.
+- `upgradeInsecureRequests` is explicitly disabled (`null`) — Helmet's CSP defaults include this directive unless told otherwise. Left on, a browser enforcing it could try to upgrade same-origin asset/API requests to HTTPS on the documented plain-HTTP LAN deployment, which nothing here serves, breaking the app. (Caught in PR review — the initial version of this change missed it.)
 - `Permissions-Policy` isn't part of helmet's maintained defaults (removed for spec churn), so it's set directly via a small custom middleware, denying geolocation/camera/microphone/payment/usb — none of which this app uses.
 
 Re-scanned after the change: 0 Fail, down from 9 to 5 Warn. The remaining 5 are either informational, the deliberate `style-src unsafe-inline`/COEP tradeoffs documented above, or a pre-existing false positive (ZAP flags the placeholder example IPs `192.168.1.50:5000`/`192.168.1.100` in the Add Printer form's help text as a "private IP disclosure" — they're placeholder text, not real infrastructure).
 
 ### Changes
 - `package.json`: added `helmet` (`^8.2.0`).
-- `server/index.js`: `app.use(helmet({...}))` with the CSP/COEP/HSTS configuration above, mounted first; a small custom middleware sets `Permissions-Policy`.
+- `server/index.js`: `app.use(helmet({...}))` with the CSP/COEP/HSTS/upgrade-insecure-requests configuration above, mounted first; a small custom middleware sets `Permissions-Policy`.
 
-Verified in a `node:22-bookworm-slim` container: full suite still 381/381 passing. Verified in a rebuilt Docker container via the browser: no console errors, Inter/Fira Code fonts confirmed loaded (`document.fonts`), all inline-styled UI intact.
+Verified in a `node:22-bookworm-slim` container: full suite still 381/381 passing. Verified in a rebuilt Docker container via the browser: no console errors, Inter/Fira Code fonts confirmed loaded (`document.fonts`), all inline-styled UI intact, `upgrade-insecure-requests` confirmed absent from the emitted CSP header.
+
+---
+
 ## 2026-07-04 — CI: gate Docker publishing on the test suite
 
 `.github/workflows/docker-publish.yml` could previously publish an image even if `server/tests/` was failing — nothing ran the suite. Added a `test` job (`npm ci` + `npm test` on `ubuntu-24.04`) that both `build` and the PR-only `pr_test_build` job now declare as a dependency (`needs: test`), so a red test suite blocks any image build, published or not. `merge` remains gated transitively via `needs: build`.

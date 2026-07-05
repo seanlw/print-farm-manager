@@ -316,6 +316,8 @@ Diagnostic for the "Why isn't this printing?" button on the Projects page. Mirro
 
 Required: `project_id`, `name`, `target_qty`.
 
+A new part always starts `open` with `completed_qty: 0`. If the parent project's status is `completed`, it's reactivated to `active` immediately (same as `POST /api/projects/:id/reactivate`) and the scheduler sweeps for idle printers right away, so the new part is picked up without a separate manual reactivate step.
+
 ### `PUT /api/parts/:id`
 
 Partial update. Accepts: `name`, `target_qty`, `completed_qty`, `status`.

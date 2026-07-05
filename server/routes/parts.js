@@ -5,7 +5,9 @@ const router  = express.Router();
 
 const GCODE_DIR = path.join(__dirname, '..', 'gcode');
 
-module.exports = (db) => {
+// scheduler is optional — only needed at runtime for sweepIdlePrinters when adding a part
+// reactivates a completed project. Tests pass null so there is no live scheduler dependency.
+module.exports = (db, scheduler = null) => {
   const ACTIVE_QTY_SQL = `
     COALESCE((
       SELECT SUM(j.parts_per_plate) FROM jobs j
@@ -137,10 +139,14 @@ module.exports = (db) => {
 
     // A new part always starts open and unmet — reopen a completed project so it's
     // schedulable immediately, same as reopening an existing closed part does (see PUT /:id).
+    // Also sweep for idle printers right away, matching POST /:id/reactivate — without
+    // this, a printer that's already idle when the part is added has no trigger to pick
+    // up the new work until some later manual dispatch or unrelated status change.
     const project = db.prepare('SELECT id, status FROM projects WHERE id = ?').get(project_id);
     if (project && project.status === 'completed') {
       db.prepare("UPDATE projects SET status = 'active', updated_at = ? WHERE id = ?").run(now, project.id);
       console.log(`[server] Project ${project.id} reactivated — new part added after completion`);
+      if (scheduler) scheduler.sweepIdlePrinters();
     }
 
     res.status(201).json(db.prepare('SELECT * FROM parts WHERE id = ?').get(result.lastInsertRowid));

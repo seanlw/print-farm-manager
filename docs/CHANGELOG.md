@@ -10,10 +10,19 @@ Root cause: `POST /api/parts` never checked the parent project's status when ins
 
 Fixed both ends: `POST /api/parts` now reactivates a `completed` parent project the same way the PUT handler does, and `POST /api/projects/:id/reactivate` now also counts already-open parts with remaining qty (not just closed ones) so it can't wrongly report nothing-to-reopen in any similar situation.
 
+**Follow-up (PR review):** the initial version reactivated the project but never triggered a dispatch sweep — `POST /api/projects/:id/reactivate` calls `scheduler.sweepIdlePrinters()` after changing project status, but `POST /api/parts` didn't, so a printer already idle when the new part was added would sit unused until some later manual dispatch or unrelated status change. `parts.js` now takes an optional `scheduler` argument (same `(db, scheduler = null)` pattern already used by `projects.js`) and calls `sweepIdlePrinters()` right after reactivating. Since `scheduler` is only constructed inside the `app.listen()` callback, `parts.js` is now mounted there too (alongside `projects.js`) instead of at module load time.
+
 ### Changes
-- `server/routes/parts.js`: `POST /` reactivates the parent project if it's `completed`.
+- `server/routes/parts.js`: `POST /` reactivates the parent project if it's `completed`, and now also sweeps for idle printers via an optional `scheduler` argument.
+- `server/index.js`: `partsRouter` moved from module-load-time instantiation to inside the `app.listen()` callback, passed `scheduler` like `projectsRouter` already was.
 - `server/routes/projects.js`: `POST /:id/reactivate` also checks for open parts with `completed_qty < target_qty`.
-- `server/tests/parts-sort.test.js`, `server/tests/projects-status.test.js`: added coverage for both.
+- `server/tests/parts-sort.test.js`, `server/tests/projects-status.test.js`: added coverage for the reactivation logic.
+- `server/tests/parts-reactivate-sweep.test.js` (new): covers the `sweepIdlePrinters()` call specifically, in its own file — `server/routes/parts.js` declares its router at module scope like every other route file, so a test needing multiple independently-mocked `scheduler` instances in one process has to force fresh modules via `jest.resetModules()` rather than reusing the router `require()`'s cache would otherwise hand back.
+- `docs/server.md`: documented the `(db, scheduler)` factory pattern, why `projects.js`/`parts.js` are mounted inside `app.listen()`, and the module-scoped-router testing gotcha.
+- `docs/api.md`: documented the reactivation/sweep behavior on `POST /api/parts`.
+
+---
+
 ## 2026-07-04 — CI: gate Docker publishing on the test suite
 
 `.github/workflows/docker-publish.yml` could previously publish an image even if `server/tests/` was failing — nothing ran the suite. Added a `test` job (`npm ci` + `npm test` on `ubuntu-24.04`) that both `build` and the PR-only `pr_test_build` job now declare as a dependency (`needs: test`), so a red test suite blocks any image build, published or not. `merge` remains gated transitively via `needs: build`.

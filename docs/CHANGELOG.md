@@ -38,6 +38,51 @@ Verified all three trigger points again, this time driven through the actual bro
 - `docs/server.md`: documented the `(db, scheduler)` factory pattern (now covering `gcodes.js` too), why these routers are mounted inside `app.listen()`, and the module-scoped-router testing gotcha.
 - `docs/api.md`: documented the reactivation/sweep behavior on `POST /api/parts`, `PUT /api/parts/:id`, and `POST /api/gcodes/upload`; corrected the `POST /api/parts` wording in round 3.
 - `docs/web-app.md`: corrected the Projects page header/status-dropdown description (was stale independent of this PR) and expanded the Quantities/Upload G-code/Add Part descriptions to match the reactivation and sweep behavior.
+## 2026-07-04 — Farm Backup: fix missing printer models, filament library, and settings
+
+`GET /api/backup` never included `printer_models`, `filament_types`, `filament_colors`, or `settings` — only `printers`, `projects`, `parts`, `gcodes`, `jobs`, and `printer_events`. Restoring a backup brought printers back with a `model` referencing a `printer_models` row that no longer existed, so those printers couldn't be edited or matched by new Add Printer submissions until the operator manually re-added every model (and re-entered the farm's filament library and farm name/dispatch batch size) by hand.
+
+Fixed by adding all four to both export and restore. Restore deletes/reinserts `filament_colors` before `filament_types` (FK on `type_id`) and `printer_models` before `printers` (no enforced FK there, but restoring the models a printer's `model` column names first matches the natural order). Each of the four is only cleared and rewritten if that key is present in the uploaded backup, so restoring an older backup (from before this fix) can't wipe the farm's current printer models/filament library/settings with nothing to restore them from — it just leaves them alone.
+
+The Settings page also now refreshes printer models, filament lists, farm name, and dispatch batch size immediately after a successful restore instead of requiring a manual page reload (same live-update approach as the recent farm name fix).
+
+### Changes
+- `server/routes/backup.js`: export/restore now include `printer_models`, `filament_types`, `filament_colors`, `settings`; guarded restore for backward compatibility with older backup files; response/log now report counts for all restored tables.
+- `client/src/pages/Settings.jsx`: added restore-result chips for the three new counts; refetches models/filament lists/settings after a successful restore.
+- `docs/api.md`: corrected the backup endpoint docs, which previously described the buggy behavior ("all 5 tables") as correct.
+
+**Follow-up (PR review):** the restore side used a hand-maintained column list per table (`printers`, `projects`, `parts`, `gcodes`), which had drifted out of sync with migrations added to `server/db.js` over time — reviewer reproduced it directly: a backup containing Bambu/CC2 `serial_number`, printer `loaded_material`/`loaded_color`, project `required_material`/`required_color`, and gcode `ams_slot`/`material_grams`/`allowed_groups`/`required_material`/`required_color` restored successfully but silently dropped every one of those fields to null/default. A disaster-recovery restore could leave Bambu/CC2 printers unable to connect and lose the material/group constraints that keep jobs off the wrong machines.
+
+Fixed by deriving each restore INSERT's column list from `PRAGMA table_info(table)` instead of a hardcoded list (`makeInserter()` in `backup.js`) — this makes the whole bug class structurally impossible going forward: a column a future migration adds is picked up automatically, with nothing in `backup.js` to remember to update. A property missing from a given row (an older backup predating a newer column) binds as `null` rather than throwing.
+
+Added `server/tests/backup-restore.test.js` per the reviewer's request for a test that would fail if a migrated column were dropped again: seeds every one of the previously-affected columns, wipes them from the live DB, restores from a real export, and asserts they all come back — plus a backward-compatibility case confirming an older backup missing a since-added column restores as `null` instead of throwing. Also verified live against a running instance with the reviewer's exact repro shape (Bambu printer with serial number/loaded material/color, targeted project, targeted+AMS gcode) — full round trip, nothing dropped.
+
+### Changes (follow-up)
+- `server/routes/backup.js`: added `makeInserter()`, replaced all hardcoded restore `INSERT` column lists with it.
+- `server/tests/backup-restore.test.js` (new): column round-trip regression coverage.
+- `docs/api.md`: documented that restore now derives its column list from the live schema.
+
+**Follow-up 2 (PR review, second round):**
+- **[P1] Path traversal in `gcode_files` restore.** Restore wrote each `backup.gcode_files` key straight through `path.join(GCODE_DIR, key)` with no validation — reviewer showed a key like `../../server/poller.js` resolves outside `server/gcode/`, so a crafted backup could overwrite arbitrary files the server process can write to instead of only restoring gcode files. Fixed by rejecting any key that isn't a bare filename (contains `/`, `\`, or is `.`/`..`) with `400` before writing anything to disk.
+- **[P2] `makeInserter()` bound missing columns as an explicit `NULL`.** That's fine for nullable columns but breaks `NOT NULL DEFAULT` columns like `parts.sort_order` — a backup row missing that column threw `NOT NULL constraint failed` instead of restoring with the default `0`, contradicting the older-backup compatibility path added in the first follow-up. Fixed by having `makeInserter()` take the actual rows being restored and omit any column absent from all of them from the generated `INSERT`, letting SQLite apply the column's own default rather than binding `null`.
+
+### Changes (follow-up 2)
+- `server/routes/backup.js`: `gcode_files` keys are validated as bare filenames before any write; `makeInserter()` now takes the table's rows and only includes columns present in the data, so columns missing from an older backup are left for SQLite's schema default instead of bound as `null`.
+- `server/tests/backup-restore.test.js`: added coverage for a missing `NOT NULL DEFAULT` column (`parts.sort_order`) restoring to its default instead of throwing, and for `gcode_files` keys attempting path traversal (`../../server/index.js`, bare `..`) being rejected with `400` and never reaching `fs.writeFileSync`.
+- `docs/api.md`: documented the `gcode_files` filename validation and the schema-default fallback for columns missing from a backup.
+
+**Follow-up 3 (PR review, third round):**
+- **[P2] No coverage for the config tables this PR added to backup/restore.** The regression suite exercised migrated columns on `printers`/`projects`/`parts`/`gcodes`, the missing `NOT NULL DEFAULT` case, and `gcode_files` validation, but never seeded or asserted `printer_models`/`filament_types`/`filament_colors`/`settings` — the four tables this PR originally added. Neither the round trip (including the `filament_colors` → `filament_types` FK order) nor the older-backup compatibility guard (missing keys must leave existing config alone) was tested for them.
+
+### Changes (follow-up 3)
+- `server/tests/backup-restore.test.js`: seeded two filament types/colors (not one) plus a printer model and two settings rows in `beforeEach`; added a describe block covering (1) export includes all four tables, (2) restore round-trips them and each restored `filament_colors` row resolves to the *correct* `filament_types` row by name (not just any row satisfying the FK), and (3) an older backup missing all four keys leaves the farm's current printer models/filament library/settings untouched. The round-trip case mutates the existing filament rows rather than deleting them first, so restore's own internal delete-then-insert runs against still-linked rows — verified by temporarily reversing the delete order in `backup.js` and confirming the test fails (500, FK violation) before reverting.
+## 2026-07-06 - Driver authoring guide for third-party connector contributors
+
+With the repo now public, printer manufacturers and community members may want to contribute connectors for new brands. The driver contract was previously folklore: spread across `multi-brand.md` brand notes, driver file comments, and hard-won lessons in this changelog. New `docs/driver-authoring.md` turns it into a spec someone outside the project can build against.
+
+Covers: the four-function driver interface with exact return shapes and error contracts (`UPLOAD_CONFLICT`, never-throw `getStatus`, resolve-only-when-started `uploadAndPrint`), the `printer` row fields drivers may use, the canonical status table with what the poller/scheduler do on each transition, the no-double-credit rules for `FINISHED` (reconnect flapping, cold start, STOPPED vs ERROR disambiguation, synthesized FINISHED), the stateless vs persistent-connection patterns with named reference drivers, a six-step registration checklist (including every `Settings.jsx` touch point), a real-hardware test matrix, and dev-without-a-fleet tips.
+
+No code changes. `docs/README.md` gained an index row; `CONTRIBUTING.md`'s Printer Drivers section now links to the guide.
 
 ---
 

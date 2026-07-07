@@ -82,6 +82,19 @@ npm run dev
 - API server: `http://localhost:3000`
 - Web UI (hot reload): `http://localhost:5173`
 
+### Prefer Docker instead of a local Node.js install?
+
+```bash
+git clone https://github.com/joeltelling/print-farm-manager.git
+cd print-farm-manager
+docker compose up --build print-farm-manager-dev
+```
+
+- API server: `http://localhost:3000`
+- Web UI (hot reload): `http://localhost:5173`
+
+Run tests with `docker compose exec print-farm-manager-dev npm test`. See the `dev` service in `docker-compose.yml` for details.
+
 ---
 
 ## Installation (Production)

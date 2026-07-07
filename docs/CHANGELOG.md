@@ -22,20 +22,22 @@ Re-scanned after the change: 0 Fail, down from 9 to 5 Warn. The remaining 5 are 
 
 Verified in a `node:22-bookworm-slim` container: full suite still 381/381 passing. Verified in a rebuilt Docker container via the browser: no console errors, Inter/Fira Code fonts confirmed loaded (`document.fonts`), all inline-styled UI intact, `upgrade-insecure-requests` confirmed absent from the emitted CSP header.
 
+**Follow-up (PR review):** none of the emitted headers had regression coverage — the existing supertest tests all build route-local `express()` apps, and `server/index.js` can't be required directly in a test (it calls `app.listen()` and exits if `client/dist` isn't built). Moved the Helmet/CSP/Permissions-Policy setup out of `server/index.js` into `server/security-headers.js` (exports `(app) => { ... }`, same factory-style pattern used elsewhere in `server/`), so it can be mounted on a bare `express()` app in a test without booting the whole server. Added `server/tests/security-headers.test.js` asserting: `upgrade-insecure-requests` is absent from the CSP, the CSP's `default-src`/`style-src`/`font-src`/`frame-ancestors` match the documented directives, `Strict-Transport-Security` and `X-Powered-By` are both absent, and `Permissions-Policy` denies geolocation/camera/microphone/payment/usb.
+
+### Changes (follow-up)
+- `server/security-headers.js` (new): the Helmet/CSP config and the `Permissions-Policy` middleware, extracted from `server/index.js` into an exported `(app) => void` factory.
+- `server/index.js`: now calls `applySecurityHeaders(app)` instead of inlining the config.
+- `server/tests/security-headers.test.js` (new): regression coverage for the emitted headers, per the discussion above.
+
 ---
 
-## 2026-07-04 — Fix: adding a part to a completed project couldn't be reactivated
+## 2026-07-06 - update.bat: discard package-lock.json drift before pulling
 
-Reported: adding a new part to a project that had already completed left the project stuck — clicking Re-activate returned "All parts are at target qty — adjust quantities first" even though the new part clearly had remaining qty (0/1).
-
-Root cause: `POST /api/parts` never checked the parent project's status when inserting a new part, unlike `PUT /api/parts/:id` which already reactivates a completed project when a part transitions from closed back to open. A brand-new part always starts `open` with `completed_qty = 0`, so it never goes through that transition — the project was left `completed` with a genuinely unmet part sitting in it. `POST /api/projects/:id/reactivate` then only checked for *closed* parts with remaining qty, so it saw nothing eligible and reported `nothing_to_reopen`.
-
-Fixed both ends: `POST /api/parts` now reactivates a `completed` parent project the same way the PUT handler does, and `POST /api/projects/:id/reactivate` now also counts already-open parts with remaining qty (not just closed ones) so it can't wrongly report nothing-to-reopen in any similar situation.
+`update.bat` runs `npm install`, which rewrites `package-lock.json` when the farm machine's npm version differs from the one that generated the lockfile. That local drift blocked `git pull` ("Your local changes ... would be overwritten by merge") the first time the lockfile changed upstream (the 2026-07-03 js-yaml bump). Hit on a real farm machine 2026-07-06.
 
 ### Changes
-- `server/routes/parts.js`: `POST /` reactivates the parent project if it's `completed`.
-- `server/routes/projects.js`: `POST /:id/reactivate` also checks for open parts with `completed_qty < target_qty`.
-- `server/tests/parts-sort.test.js`, `server/tests/projects-status.test.js`: added coverage for both.
+- `update.bat`: step 1 now runs `git checkout -- package-lock.json client/package-lock.json` before `git pull`. The farm checkout is a deploy target with no intentional local changes, so discarding lockfile drift is always safe there.
+- `docs/installation.md`: documented the discard step and the manual `git restore package-lock.json` recovery for older copies of the script.
 
 ---
 

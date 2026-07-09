@@ -43,6 +43,7 @@ beforeAll(() => {
       allowed_groups TEXT,
       required_material TEXT,
       required_color TEXT,
+      file_size INTEGER,
       created_at INTEGER NOT NULL
     );
     CREATE TABLE printers (
@@ -80,6 +81,7 @@ beforeAll(() => {
   db.exec(`INSERT INTO printer_models VALUES ('x1c',  'X1 Carbon',  'bambu')`);
   db.exec(`INSERT INTO printer_models VALUES ('a1',   'A1',         'bambu')`);
   db.exec(`INSERT INTO printer_models VALUES ('p1s',  'P1S',        'bambu')`);
+  db.exec(`INSERT INTO printer_models VALUES ('xl',   'XL',         'prusa')`);
 
   if (!fs.existsSync(GCODE_DIR)) fs.mkdirSync(GCODE_DIR, { recursive: true });
 
@@ -186,6 +188,24 @@ describe('POST /api/gcodes/upload', () => {
     expect(res.status).toBe(201);
     expect(res.body.printer_model).toBe('mk4s');
     expect(res.body.parts_per_plate).toBe(4);
+    uploadedPath = res.body.filepath;
+  });
+
+  test('populates file_size from the uploaded file', async () => {
+    const tmpFile = makeTempGcode('file_size_test.bgcode');
+    const expectedSize = fs.statSync(tmpFile).size;
+
+    const res = await request(app)
+      .post('/api/gcodes/upload')
+      .attach('file', tmpFile)
+      .field('part_id', '1')
+      .field('parts_per_plate', '1')
+      .field('printer_model', 'xl'); // distinct model to avoid the (part_id, printer_model) 409
+
+    fs.unlinkSync(tmpFile);
+
+    expect(res.status).toBe(201);
+    expect(res.body.file_size).toBe(expectedSize);
     uploadedPath = res.body.filepath;
   });
 
@@ -386,5 +406,102 @@ describe('DELETE /api/gcodes/:id', () => {
     const job = db.prepare('SELECT gcode_id FROM jobs WHERE id = ?').get(jobId);
     expect(job).toBeDefined();
     expect(job.gcode_id).toBeNull();
+  });
+});
+
+// ── GET /api/gcodes/:id/preview ─────────────────────────────────────────────
+// The exhaustive bgcode/3mf decode matrix (compression/encoding variants, error cases)
+// lives in server/tests/gcode-decode.test.js against gcode-decode.js directly. These
+// tests only prove the route dispatches correctly by extension and handles 404/422.
+const JSZip = require('jszip');
+
+function minimalBgcodeFile(gcodeText) {
+  const header = Buffer.alloc(10);
+  header.write('GCDE', 0, 'ascii');
+  header.writeUInt32LE(1, 4);
+  header.writeUInt16LE(0, 8);
+
+  const payload = Buffer.from(gcodeText, 'utf8');
+  const blockHeader = Buffer.alloc(8);
+  blockHeader.writeUInt16LE(1, 0); // block type: GCode
+  blockHeader.writeUInt16LE(0, 2); // compression: none
+  blockHeader.writeUInt32LE(payload.length, 4);
+  const params = Buffer.alloc(2); // encoding: none
+
+  return Buffer.concat([header, blockHeader, params, payload]);
+}
+
+describe('GET /api/gcodes/:id/preview', () => {
+  const written = [];
+
+  afterEach(() => {
+    while (written.length) {
+      const p = written.pop();
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
+  });
+
+  test('returns 404 for unknown id', async () => {
+    const res = await request(app).get('/api/gcodes/99999/preview');
+    expect(res.status).toBe(404);
+  });
+
+  test('returns 404 when the file is missing from disk', async () => {
+    const filename = `missing_${Date.now()}.gcode`;
+    const id = insertGcode(filename, filename);
+    const res = await request(app).get(`/api/gcodes/${id}/preview`);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/missing from disk/i);
+  });
+
+  test('serves a plain .gcode file as-is', async () => {
+    const filename = `preview_${Date.now()}.gcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    fs.writeFileSync(fullPath, 'G1 X10 Y20\n');
+    written.push(fullPath);
+    const id = insertGcode(filename, filename);
+
+    const res = await request(app).get(`/api/gcodes/${id}/preview`);
+    expect(res.status).toBe(200);
+    expect(res.text).toBe('G1 X10 Y20\n');
+    expect(res.headers['content-type']).toMatch(/text\/plain/);
+  });
+
+  test('decodes a .bgcode file to plain text', async () => {
+    const filename = `preview_${Date.now()}.bgcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    fs.writeFileSync(fullPath, minimalBgcodeFile('G1 X1 Y1\n'));
+    written.push(fullPath);
+    const id = insertGcode(filename, filename);
+
+    const res = await request(app).get(`/api/gcodes/${id}/preview`);
+    expect(res.status).toBe(200);
+    expect(res.text).toBe('G1 X1 Y1\n');
+  });
+
+  test('decodes a .3mf file to plain text', async () => {
+    const filename = `preview_${Date.now()}.3mf`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    const zip = new JSZip();
+    zip.file('Metadata/plate_1.gcode', 'G1 X5 Y5\n');
+    fs.writeFileSync(fullPath, await zip.generateAsync({ type: 'nodebuffer' }));
+    written.push(fullPath);
+    const id = insertGcode(filename, filename);
+
+    const res = await request(app).get(`/api/gcodes/${id}/preview`);
+    expect(res.status).toBe(200);
+    expect(res.text).toBe('G1 X5 Y5\n');
+  });
+
+  test('returns 422 with a typed error code when a .bgcode file fails to decode', async () => {
+    const filename = `preview_bad_${Date.now()}.bgcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    fs.writeFileSync(fullPath, 'not a real bgcode file');
+    written.push(fullPath);
+    const id = insertGcode(filename, filename);
+
+    const res = await request(app).get(`/api/gcodes/${id}/preview`);
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('INVALID_BGCODE');
   });
 });

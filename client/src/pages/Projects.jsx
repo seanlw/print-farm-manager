@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useToast } from '../useToast';
 import EmptyState from '../components/EmptyState';
 import { useConfirm } from '../useConfirm';
+import GcodeViewerModal from '../GcodeViewerModal';
 
 // ── Estimate helpers ──────────────────────────────────────────────────────────
 
@@ -894,6 +895,9 @@ export default function Projects() {
   // Details panels (set of open part IDs)
   const [openPanels, setOpenPanels]       = useState(new Set());
 
+  // 3D G-code viewer — part id currently previewing, or null
+  const [viewer3DPartId, setViewer3DPartId] = useState(null);
+
   // Inline rename
   const [editingProjectName, setEditingProjectName] = useState(false);
   const [projectNameDraft, setProjectNameDraft]     = useState('');
@@ -1596,6 +1600,18 @@ export default function Projects() {
                 {partSt.label}
               </span>
 
+              {/* 3D Viewer — only when this part has a G-code file to preview */}
+              {partGs.length > 0 && (
+                <button
+                  onClick={() => setViewer3DPartId(part.id)}
+                  title="3D Viewer"
+                  style={{
+                    background: 'none', border: '1px solid #334155', color: '#94a3b8',
+                    borderRadius: 4, padding: '4px 10px', fontSize: 12, cursor: 'pointer', flexShrink: 0,
+                  }}
+                >3D Viewer</button>
+              )}
+
               {/* Details toggle */}
               <button
                 onClick={() => togglePanel(part.id)}
@@ -1620,6 +1636,10 @@ export default function Projects() {
                 }}
               >×</button>
             </div>
+
+            {viewer3DPartId === part.id && (
+              <GcodeViewerModal gcode={partGs[0]} partName={part.name} onClose={() => setViewer3DPartId(null)} />
+            )}
 
             {panelOpen && (
               <PartDetailsPanel

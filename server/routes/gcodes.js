@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { decodeBgcode, decode3mf, GcodeDecodeError } = require('../gcode-decode');
 const router = express.Router();
 
 const GCODE_DIR = path.join(__dirname, '..', 'gcode');
@@ -156,8 +157,8 @@ module.exports = (db) => {
     const parsedRequiredColor    = required_color    && required_color    !== '' ? required_color.trim()    : null;
 
     const gcode = db.prepare(`
-      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, est_print_secs, material_grams, ams_slot, allowed_groups, required_material, required_color, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, est_print_secs, material_grams, ams_slot, allowed_groups, required_material, required_color, file_size, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       part_id,
       printer_model,
@@ -170,6 +171,7 @@ module.exports = (db) => {
       parsedAllowedGroups,
       parsedRequiredMaterial,
       parsedRequiredColor,
+      req.file.size,
       Date.now()
     );
 
@@ -215,6 +217,39 @@ module.exports = (db) => {
       .run(estPrintSecs, materialGrams, allowedGroups, requiredMaterial, requiredColor, req.params.id);
 
     res.json(db.prepare('SELECT * FROM gcodes WHERE id = ?').get(req.params.id));
+  });
+
+  // GET /api/gcodes/:id/preview — plain-text G-code for the 3D viewer, normalized
+  // regardless of source format (.gcode passes through, .bgcode/.3mf are decoded server-side
+  // so the client only ever has to deal with plain G-code text).
+  router.get('/:id/preview', async (req, res) => {
+    const gcode = db.prepare('SELECT * FROM gcodes WHERE id = ?').get(req.params.id);
+    if (!gcode) return res.status(404).json({ error: 'G-code not found' });
+
+    const gcodeFilename = gcode.filepath.split(/[\\/]/).pop();
+    const fullPath = path.join(GCODE_DIR, gcodeFilename);
+    if (!fs.existsSync(fullPath)) {
+      return res.status(404).json({ error: 'G-code file is missing from disk' });
+    }
+
+    const ext = path.extname(gcode.filename).toLowerCase();
+    try {
+      const buffer = fs.readFileSync(fullPath);
+      let text;
+      if (ext === '.bgcode') {
+        text = decodeBgcode(buffer);
+      } else if (ext === '.3mf') {
+        text = await decode3mf(buffer);
+      } else {
+        text = buffer.toString('utf8');
+      }
+      res.set('Content-Type', 'text/plain').send(text);
+    } catch (err) {
+      if (err instanceof GcodeDecodeError) {
+        return res.status(422).json({ error: err.message, code: err.code });
+      }
+      throw err;
+    }
   });
 
   // DELETE /api/gcodes/:id

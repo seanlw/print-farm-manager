@@ -423,6 +423,12 @@ Returns `409` if the gcode is referenced by an active job (`queued`, `uploading`
 
 Historical jobs (`finished`, `failed`, `cancelled`) are retained with their `gcode_id` nulled out so job history is preserved.
 
+### `GET /api/gcodes/:id/preview`
+
+Returns the G-code as plain text (`Content-Type: text/plain`), normalized regardless of source format — used by the Part Details 3D viewer. `.gcode` files are served as-is; `.bgcode` (Prusa's binary format) and `.3mf` (Bambu's zip project file) are decoded/extracted server-side via `server/gcode-decode.js`, so the client only ever deals with plain text.
+
+Returns `404` if the record or its on-disk file doesn't exist. Returns `422` with `{ "error": "...", "code": "..." }` if the file can't be decoded (e.g. `INVALID_BGCODE`, `UNSUPPORTED_COMPRESSION`, `NO_GCODE_IN_3MF` — see `server/gcode-decode.js` for the full set).
+
 ---
 
 ## Jobs

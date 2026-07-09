@@ -2,6 +2,35 @@
 
 ---
 
+## 2026-07-09 — 3D preview of a part's G-code from the Part Details panel
+
+Operators previously had no way to visually confirm what a part would actually print without opening the G-code file in slicer software — the Details panel only ever showed filenames. Added a **3D Viewer** button on each part's row, next to the Details toggle, that opens a modal preview (rotate/zoom via mouse) of the part's attached G-code, without leaving the Projects page.
+
+A part can have multiple G-code files (one per printer model it's sliced for), but they're all the same physical item — so the viewer always previews the first file in the list rather than offering a per-file viewer.
+
+This app already accepts three G-code formats on upload — plain `.gcode`, Prusa's binary `.bgcode`, and Bambu's zip-based `.3mf` — and the viewer supports all three. Rather than ship format-specific binary/zip parsing to every browser, decoding happens server-side: a new `GET /api/gcodes/:id/preview` endpoint normalizes any of the three into plain G-code text, so the client only ever deals with plain text regardless of source format.
+
+`.bgcode` decoding (`server/gcode-decode.js`) implements Prusa's published block format ([libbgcode spec](https://github.com/prusa3d/libbgcode/blob/main/doc/specifications.md)): a 10-byte file header, then a sequence of typed blocks (GCode blocks are the only ones read; metadata/thumbnail blocks are skipped), each optionally compressed (Deflate via `pako`, or Heatshrink window 11/12 via `heatshrink-ts`) and/or MeatPack-encoded. `.3mf` decoding uses `jszip` to extract the plain-text plate G-code already stored inside the zip archive at `Metadata/plate_*.gcode`.
+
+The MeatPack decoder is a port of libbgcode's own reference implementation (`src/LibBGCode/binarize/meatpack.cpp`'s `unbinarize()`): packing toggles on and off via `0xFF 0xFF <command>` sequences (comment lines are written raw, with packing disabled around them), and when "no spaces" mode was used to shrink the encoded size further, whitespace between G-code parameters is reinserted on decode. `server/tests/fixtures/` commits a real `.bgcode` file and its official reference decode from `prusa3d/libbgcode`'s own test suite, and a regression test asserts every one of its 1,702 real `G0`-`G3` move lines matches that reference exactly.
+
+On the client, a Web Worker (`gcode-parser.worker.js`) parses `G0`/`G1`/`G2`/`G3` extrusion moves into a `Float32Array` of segment start/end positions off the main thread, so parsing doesn't freeze the UI regardless of file size; travel (non-extruding) moves are discarded entirely rather than rendered, so the preview only shows printed material. X/Y/Z positioning mode (`G90`/`G91`) and extruder mode (`M82`/`M83`) are tracked as two independent flags rather than one, since real slicer output routinely mixes them — PrusaSlicer's standard preamble is `G90` (absolute XYZ) followed by `M83` (relative E) — so E must accumulate onto a running total even while X/Y/Z stay absolute. Segments render as fat lines (`LineSegments2`/`LineSegmentsGeometry`/`LineMaterial` from `three/addons/lines`) with a constant **screen-space** line width (`LINE_WIDTH_PX = 5`, in CSS pixels, `worldUnits: false`) rather than a world-space (mm) size. A fixed pixel width stays visually constant regardless of zoom or model scale, so a real slicer's actual travel gaps (perimeters broken into passes, infill lines separated by travel moves, etc.) mostly disappear into the line's own thickness at typical part-viewing zoom rather than reading as visible holes. Zooming in far enough, or a travel move large enough (a multi-millimeter perimeter-to-perimeter jump, a bed-spanning prime line), can still show a real gap once it exceeds the line's width at that scale; this is an accurate reflection of the underlying toolpath, not a rendering defect. Vertex-colored by height (blue → yellow) via `LineSegmentsGeometry.setColors`. `OrbitControls` handles mouse-driven rotate/zoom/pan; none of this reaches for a React-three renderer layer, matching this app's existing hand-rolled style. A bottom-right camera control pad — an SVG D-pad matching the layout found in most CAD/model-viewer UIs (e.g. printables.com's viewer) — adds four rotate wedges (nudging the camera around its target by a fixed 15° step, via spherical-coordinate orbiting clamped away from the poles to avoid `OrbitControls`' gimbal-lock instability at a perfectly vertical look direction), a center zoom in/out split circle, and two icon buttons below: Reset (returns to the default framed view and zoom) and an isometric-cube icon (reorients to the standard angle but keeps the current zoom level, unlike Reset). Files over 100 MB are blocked by default (with a "Try anyway" override); 20–100 MB shows a performance warning — a new `file_size` column (populated from multer's already-available `req.file.size`, previously discarded) makes this possible without an extra request.
+
+Verified: full suite passes, including regression coverage for every bgcode compression/encoding combination against both synthetic and real fixtures, `.3mf` extraction, and the new route's 404/422/200 paths. Also verified live against the running dev server: uploaded a real PrusaSlicer-generated `.bgcode` file, a plain `.gcode` file, and a hand-built `.3mf` wrapping the same real G-code, and confirmed all three render as continuous, correctly-colored models (rotate/zoom, no travel-move clutter) through the actual browser UI, not just the decoder in isolation. No client-side test runner exists in this repo, so the viewer itself (rendering, controls, size-guard UI) was verified manually rather than via automated tests, matching how other client-side changes in this project are verified.
+
+### Changes
+- `server/gcode-decode.js` (new): `decodeBgcode()`, `decode3mf()`, `GcodeDecodeError`.
+- `server/routes/gcodes.js`: new `GET /:id/preview` route; `POST /upload` now stores `file_size`.
+- `server/db.js`: new `gcodes.file_size` column (defensive `ALTER TABLE`).
+- `server/tests/gcode-decode.test.js` (new), `server/tests/gcodes.test.js`: regression coverage described above.
+- `server/tests/fixtures/` (new): real `.bgcode` + reference-decode pair from `prusa3d/libbgcode`'s own test suite.
+- `client/src/GcodeViewerModal.jsx` (new), `client/src/gcode-parser.worker.js` (new).
+- `client/src/pages/Projects.jsx`: "3D Viewer" button on each part's row, next to the Details toggle (shown once the part has a G-code file).
+- `package.json`: added `pako`, `heatshrink-ts`, `jszip`. `client/package.json`: added `three`.
+- `docs/api.md`, `docs/server.md`, `docs/web-app.md`: documented the new endpoint, module, and UI action.
+
+---
+
 ## 2026-07-04 — Add security response headers via helmet
 
 Ran an OWASP ZAP baseline scan against the running container (0 High findings, but 2 Medium: missing CSP, missing anti-clickjacking header) plus several Low findings (`X-Content-Type-Options` missing, `X-Powered-By` leaking Express, `Permissions-Policy` missing).

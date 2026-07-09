@@ -42,6 +42,27 @@ self.onmessage = (e) => {
 
     if (code === '91') { relative = true; continue; }
     if (code === '90') { relative = false; continue; }
+    if (code === '92') {
+      // Set Position — redefines the current coordinate for whichever axes are given,
+      // independent of relative/absolute mode, without moving the toolhead. Slicers commonly
+      // emit `G92 E0` every so often (even under M83/relative E) to reset the extruder's
+      // position register; skipping this line entirely left the tracked E value stale, so the
+      // next real extrusion move could compare against a much larger prior value and be
+      // misclassified as a non-extruding travel.
+      for (const p of cmd.split(/\s+/).slice(1)) {
+        const axis = p[0];
+        const value = parseFloat(p.slice(1));
+        if (Number.isNaN(value)) continue;
+        switch (axis) {
+          case 'X': case 'x': x = value; break;
+          case 'Y': case 'y': y = value; break;
+          case 'Z': case 'z': z = value; break;
+          case 'E': case 'e': e_ = value; break;
+          default: break;
+        }
+      }
+      continue;
+    }
     if (code !== '0' && code !== '1' && code !== '2' && code !== '3') continue;
 
     const prevX = x, prevY = y, prevZ = z, prevE = e_;

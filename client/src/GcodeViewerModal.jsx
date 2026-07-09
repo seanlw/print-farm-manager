@@ -85,6 +85,18 @@ export default function GcodeViewerModal({ gcode, partName, onClose }) {
       if (worker) worker.terminate();
       if (animId) cancelAnimationFrame(animId);
       if (controls) controls.dispose();
+      if (scene) {
+        // WebGLRenderer.dispose() only frees the renderer's own internal state (program
+        // cache, render lists, etc.) — it does not free the geometries/materials attached to
+        // objects in the scene graph. Without this, every open of the viewer (a part can be
+        // reopened repeatedly, or a project can have many parts) leaks the GPU buffers backing
+        // the fat-line geometry and material.
+        scene.traverse((obj) => {
+          obj.geometry?.dispose();
+          const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+          materials.forEach((m) => m?.dispose());
+        });
+      }
       if (renderer) {
         renderer.dispose();
         if (mount && renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);

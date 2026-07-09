@@ -248,7 +248,14 @@ module.exports = (db) => {
       if (err instanceof GcodeDecodeError) {
         return res.status(422).json({ error: err.message, code: err.code });
       }
-      throw err;
+      // Any other decode failure (e.g. a corrupt Deflate/Heatshrink payload inside an
+      // otherwise well-formed bgcode block, or a corrupt entry inside an otherwise valid .3mf
+      // zip) must still resolve to a response rather than reject — this route runs on Express
+      // 4, which doesn't catch rejected promises from async handlers, and the app's own
+      // top-level `unhandledRejection` handler treats any that escape as fatal and exits the
+      // process. A malformed uploaded file should return a 422, not take down the server.
+      console.error(`[gcodes] preview decode failed for gcode ${req.params.id}:`, err);
+      return res.status(422).json({ error: 'Failed to decode this G-code file — it may be corrupt.', code: 'DECODE_FAILED' });
     }
   });
 

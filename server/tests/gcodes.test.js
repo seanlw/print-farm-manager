@@ -504,4 +504,35 @@ describe('GET /api/gcodes/:id/preview', () => {
     expect(res.status).toBe(422);
     expect(res.body.code).toBe('INVALID_BGCODE');
   });
+
+  test('returns 422 (not a crash) when a structurally valid bgcode block has a corrupt payload for a known compression type', async () => {
+    // Passes the magic-header and every block-bounds check (a real bgcode parser would accept
+    // this as a well-formed GCode block declaring Deflate compression), but the "compressed"
+    // bytes aren't valid deflate data — pako throws a plain Error here, not a GcodeDecodeError,
+    // which previously bypassed the route's typed-error check and crashed the whole process
+    // (Express 4 doesn't catch rejected promises from async handlers, and this app's top-level
+    // unhandledRejection handler exits on anything that escapes).
+    const header = Buffer.alloc(10);
+    header.write('GCDE', 0, 'ascii');
+    header.writeUInt32LE(1, 4);
+    header.writeUInt16LE(0, 8);
+
+    const garbage = Buffer.from([0x00, 0x01, 0x02, 0x03, 0xff, 0xff, 0x10, 0x20]);
+    const blockHeader = Buffer.alloc(12);
+    blockHeader.writeUInt16LE(1, 0);   // block type: GCode
+    blockHeader.writeUInt16LE(1, 2);   // compression: Deflate
+    blockHeader.writeUInt32LE(100, 4); // claimed uncompressed size
+    blockHeader.writeUInt32LE(garbage.length, 8);
+    const params = Buffer.alloc(2); // encoding: none
+
+    const filename = `preview_corrupt_deflate_${Date.now()}.bgcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    fs.writeFileSync(fullPath, Buffer.concat([header, blockHeader, params, garbage]));
+    written.push(fullPath);
+    const id = insertGcode(filename, filename);
+
+    const res = await request(app).get(`/api/gcodes/${id}/preview`);
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('DECODE_FAILED');
+  });
 });

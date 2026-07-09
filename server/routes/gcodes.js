@@ -108,6 +108,29 @@ module.exports = (db) => {
     const gcodes = part_id
       ? db.prepare('SELECT * FROM gcodes WHERE part_id = ? ORDER BY created_at ASC, id ASC').all(part_id)
       : db.prepare('SELECT * FROM gcodes ORDER BY created_at DESC').all();
+
+    // Backfill file_size for rows that predate that column (ALTER TABLE leaves existing rows
+    // NULL) or otherwise never got it recorded. Lazy, on-access backfill rather than a
+    // blocking loop over every row at server startup — that would scale with however large the
+    // pre-existing backlog is and block every request (health checks, printer polling, the
+    // whole app) until it finished. This way each row self-heals the moment it's actually
+    // listed, at the cost of one fs.statSync() per not-yet-backfilled row per request.
+    const updateFileSize = db.prepare('UPDATE gcodes SET file_size = ? WHERE id = ?');
+    for (const gcode of gcodes) {
+      if (gcode.file_size == null) {
+        const fullPath = path.join(GCODE_DIR, gcode.filepath.split(/[\\/]/).pop());
+        try {
+          const size = fs.statSync(fullPath).size;
+          gcode.file_size = size;
+          updateFileSize.run(size, gcode.id);
+        } catch (_) {
+          // File missing from disk — leave file_size null. Existing null-safe client checks
+          // already treat that as "unknown," and DELETE/preview already report a missing file
+          // explicitly if the operator acts on this row directly.
+        }
+      }
+    }
+
     res.json(gcodes);
   });
 

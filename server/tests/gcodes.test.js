@@ -368,6 +368,74 @@ describe('GET /api/gcodes?part_id=', () => {
       expect(res.body.map((g) => g.id)).toEqual([first, second]);
     });
   });
+
+  test('backfills file_size on access for a row that predates that column, and persists it', () => {
+    const partId = db.prepare(
+      'INSERT INTO parts (project_id, name, target_qty, created_at, updated_at) VALUES (1, ?, 1, ?, ?)'
+    ).run('Backfill Test Part', Date.now(), Date.now()).lastInsertRowid;
+
+    const filename = `backfill_${Date.now()}.gcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    const content = 'G1 X1 Y1\nG1 X2 Y2\n';
+    fs.writeFileSync(fullPath, content);
+
+    const id = db.prepare(`
+      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, created_at)
+      VALUES (?, 'mk4s', ?, ?, 1, ?)
+    `).run(partId, filename, filename, Date.now()).lastInsertRowid;
+
+    expect(db.prepare('SELECT file_size FROM gcodes WHERE id = ?').get(id).file_size).toBeNull();
+
+    return request(app).get(`/api/gcodes?part_id=${partId}`).then((res) => {
+      expect(res.status).toBe(200);
+      expect(res.body[0].file_size).toBe(content.length);
+      // Persisted, not just reflected in this one response.
+      expect(db.prepare('SELECT file_size FROM gcodes WHERE id = ?').get(id).file_size).toBe(content.length);
+      fs.unlinkSync(fullPath);
+    });
+  });
+
+  test('leaves file_size null (without crashing) when the on-disk file is missing', () => {
+    const partId = db.prepare(
+      'INSERT INTO parts (project_id, name, target_qty, created_at, updated_at) VALUES (1, ?, 1, ?, ?)'
+    ).run('Backfill Missing File Test Part', Date.now(), Date.now()).lastInsertRowid;
+
+    const id = db.prepare(`
+      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, created_at)
+      VALUES (?, 'mk4s', 'ghost_backfill.gcode', 'ghost_backfill.gcode', 1, ?)
+    `).run(partId, Date.now()).lastInsertRowid;
+
+    return request(app).get(`/api/gcodes?part_id=${partId}`).then((res) => {
+      expect(res.status).toBe(200);
+      expect(res.body[0].file_size).toBeNull();
+      expect(db.prepare('SELECT file_size FROM gcodes WHERE id = ?').get(id).file_size).toBeNull();
+    });
+  });
+
+  test('never re-stats or overwrites a row that already has a file_size', () => {
+    const partId = db.prepare(
+      'INSERT INTO parts (project_id, name, target_qty, created_at, updated_at) VALUES (1, ?, 1, ?, ?)'
+    ).run('Backfill Already-Set Test Part', Date.now(), Date.now()).lastInsertRowid;
+
+    const filename = `already_set_${Date.now()}.gcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    fs.writeFileSync(fullPath, 'G1 X1 Y1\nG1 X2 Y2\n'); // real on-disk size differs from below
+
+    const staleSize = 999999;
+    const id = db.prepare(`
+      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, file_size, created_at)
+      VALUES (?, 'mk4s', ?, ?, 1, ?, ?)
+    `).run(partId, filename, filename, staleSize, Date.now()).lastInsertRowid;
+
+    return request(app).get(`/api/gcodes?part_id=${partId}`).then((res) => {
+      expect(res.status).toBe(200);
+      // Still the stale stored value, not the real file's actual size — proves the backfill
+      // never touches a row where file_size is already non-null.
+      expect(res.body[0].file_size).toBe(staleSize);
+      expect(db.prepare('SELECT file_size FROM gcodes WHERE id = ?').get(id).file_size).toBe(staleSize);
+      fs.unlinkSync(fullPath);
+    });
+  });
 });
 
 describe('DELETE /api/gcodes/:id', () => {

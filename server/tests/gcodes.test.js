@@ -327,6 +327,49 @@ function insertGcode(filename, filepath) {
   return row.lastInsertRowid;
 }
 
+describe('GET /api/gcodes?part_id=', () => {
+  // Callers (e.g. the 3D Viewer, which always previews gcodes[0] as the part's representative
+  // file) depend on this list being in a stable, meaningful order — not whatever unspecified
+  // order SQLite happens to return for a query with no ORDER BY.
+  test('orders results oldest-first by created_at', () => {
+    const partId = db.prepare(
+      'INSERT INTO parts (project_id, name, target_qty, created_at, updated_at) VALUES (1, ?, 1, ?, ?)'
+    ).run('Order Test Part', Date.now(), Date.now()).lastInsertRowid;
+
+    const insert = db.prepare(`
+      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, created_at)
+      VALUES (?, 'mk4s', ?, ?, 1, ?)
+    `);
+    const newest = insert.run(partId, 'newest.gcode', 'newest.gcode', 3000).lastInsertRowid;
+    const oldest = insert.run(partId, 'oldest.gcode', 'oldest.gcode', 1000).lastInsertRowid;
+    const middle = insert.run(partId, 'middle.gcode', 'middle.gcode', 2000).lastInsertRowid;
+
+    return request(app).get(`/api/gcodes?part_id=${partId}`).then((res) => {
+      expect(res.status).toBe(200);
+      expect(res.body.map((g) => g.id)).toEqual([oldest, middle, newest]);
+    });
+  });
+
+  test('breaks ties on identical created_at by id, so insertion order is preserved', () => {
+    const partId = db.prepare(
+      'INSERT INTO parts (project_id, name, target_qty, created_at, updated_at) VALUES (1, ?, 1, ?, ?)'
+    ).run('Tie Test Part', Date.now(), Date.now()).lastInsertRowid;
+
+    const insert = db.prepare(`
+      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, created_at)
+      VALUES (?, 'mk4s', ?, ?, 1, ?)
+    `);
+    const sameTimestamp = 5000;
+    const first = insert.run(partId, 'a.gcode', 'a.gcode', sameTimestamp).lastInsertRowid;
+    const second = insert.run(partId, 'b.gcode', 'b.gcode', sameTimestamp).lastInsertRowid;
+
+    return request(app).get(`/api/gcodes?part_id=${partId}`).then((res) => {
+      expect(res.status).toBe(200);
+      expect(res.body.map((g) => g.id)).toEqual([first, second]);
+    });
+  });
+});
+
 describe('DELETE /api/gcodes/:id', () => {
   test('returns 404 for unknown id', async () => {
     const res = await request(app).delete('/api/gcodes/99999');

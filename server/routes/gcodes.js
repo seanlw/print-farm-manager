@@ -93,10 +93,14 @@ function normalizeMaterialGrams(raw) {
 
 module.exports = (db) => {
   // GET /api/gcodes — list, optionally filtered by part_id
+  // The part_id-filtered branch is ordered oldest-first (by created_at, with id as a tiebreak
+  // for same-millisecond inserts) so "the first gcode for this part" is a stable, meaningful
+  // concept for callers — e.g. the 3D Viewer previews gcodes[0] as the part's representative
+  // file — rather than relying on SQLite's unspecified row order for a query with no ORDER BY.
   router.get('/', (req, res) => {
     const { part_id } = req.query;
     const gcodes = part_id
-      ? db.prepare('SELECT * FROM gcodes WHERE part_id = ?').all(part_id)
+      ? db.prepare('SELECT * FROM gcodes WHERE part_id = ? ORDER BY created_at ASC, id ASC').all(part_id)
       : db.prepare('SELECT * FROM gcodes ORDER BY created_at DESC').all();
     res.json(gcodes);
   });

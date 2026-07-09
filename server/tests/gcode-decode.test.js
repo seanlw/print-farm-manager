@@ -130,6 +130,27 @@ describe('decodeBgcode', () => {
     expect(decodeBgcode(file)).toBe('ab');
   });
 
+  test('MeatPack decode: output survives multiple internal chunk-flush boundaries intact', () => {
+    // decodeMeatpack collects output into bounded chunks (flushed and joined every 65536
+    // characters) rather than one growing array — a plain JS array throws `RangeError: Invalid
+    // array length` once pushed past roughly 113 million elements, a real V8 ceiling confirmed
+    // by direct testing, well below the 200MB decompression cap a packed stream can legitimately
+    // expand to. That full-scale case (~150MB of output) was verified manually — see the
+    // changelog — since reproducing it here would run past a minute under Jest's instrumentation
+    // even though the same input decodes in ~3s in plain Node. This test instead proves the
+    // chunking mechanism itself is correct: several hundred thousand characters comfortably
+    // spans multiple flush-and-rejoin cycles, so any corruption at a chunk boundary (in
+    // particular, `lastChar` not surviving a flush, which the newline-collapse and G-line-space
+    // logic in `emit()` both depend on) would show up as a byte mismatch below.
+    const line = Buffer.from('G1 X1 Y1\n');
+    const original = Buffer.concat(Array(60000).fill(line)); // ~540,000 chars, ~8 chunk flushes
+    const file = bgcodeFile(gcodeBlock(original, { encoding: 1, uncompressedSize: original.length }));
+
+    const decoded = decodeBgcode(file);
+    expect(decoded.length).toBe(original.length);
+    expect(decoded).toBe(original.toString('utf8'));
+  });
+
   test('throws INVALID_BGCODE for a missing magic header', () => {
     expect(() => decodeBgcode(Buffer.from('not a bgcode file'))).toThrow(GcodeDecodeError);
     try {

@@ -92,6 +92,10 @@ function heatshrinkInflateCapped(payload, windowBits, maxBytes) {
 function decompressBlock(payload, compression) {
   switch (compression) {
     case COMPRESSION_NONE:
+      // No amplification risk here (the payload's own size is already bounded by the upload
+      // size limit), but capped anyway for a single consistent ceiling on what downstream
+      // processing (decodeMeatpack, encoding to text) ever has to handle.
+      if (payload.length > MAX_DECOMPRESSED_BYTES) throw tooLargeError(MAX_DECOMPRESSED_BYTES);
       return payload;
     case COMPRESSION_DEFLATE:
       return inflateRawCapped(payload, MAX_DECOMPRESSED_BYTES);
@@ -122,7 +126,17 @@ const GLINE_PARAMETERS = new Set(['X', 'Y', 'Z', 'E', 'F', 'I', 'J', 'R', 'S', '
 // raw, with packing disabled around them — and when "no spaces" mode was used to encode,
 // whitespace between G-code parameters is stripped before packing and must be reinserted here.
 function decodeMeatpack(buffer) {
-  const out = [];
+  // Output is collected into bounded chunks rather than one array of single characters. A
+  // plain JS array throws `RangeError: Invalid array length` once it grows past roughly 113
+  // million elements (a real, verified V8 engine ceiling, well below the 200MB decompression
+  // cap a packed stream can legitimately expand to after Deflate/Heatshrink) — a large but
+  // entirely legitimate MeatPack-encoded file could hit that ceiling well before any actual
+  // corruption or abuse. `lastChar` tracks the most recently emitted character directly, since
+  // `emit()`'s logic below needs to peek at it without indexing into whichever chunk it landed in.
+  const CHUNK_SIZE = 65536;
+  const chunks = [];
+  let chunk = [];
+  let lastChar = null;
   let unbinarizing = false;
   let noSpaceEnabled = false;
   let cmdActive = false;
@@ -132,7 +146,12 @@ function decodeMeatpack(buffer) {
   let addSpace = false;
 
   function output(c) {
-    out.push(c);
+    chunk.push(c);
+    lastChar = c;
+    if (chunk.length >= CHUNK_SIZE) {
+      chunks.push(chunk.join(''));
+      chunk = [];
+    }
   }
 
   function charFor(nibble) {
@@ -154,7 +173,7 @@ function decodeMeatpack(buffer) {
     // Reinserts the space between G-code parameters that "no spaces" mode stripped before
     // packing, and collapses accidental duplicate newlines — matching libbgcode's own
     // post-processing (needed because its GCodeReader can't parse unspaced parameters).
-    const last = out.length > 0 ? out[out.length - 1] : null;
+    const last = lastChar;
     let newLine = false;
     if (c === 'G' && (last === null || last === '\n')) {
       addSpace = true;
@@ -167,7 +186,7 @@ function decodeMeatpack(buffer) {
       output(' ');
     }
 
-    if (c !== '\n' || out.length === 0 || out[out.length - 1] !== '\n') {
+    if (c !== '\n' || lastChar !== '\n') {
       output(c);
     }
   }
@@ -236,7 +255,8 @@ function decodeMeatpack(buffer) {
     handleRxChar(c);
   }
 
-  return out.join('');
+  if (chunk.length > 0) chunks.push(chunk.join(''));
+  return chunks.join('');
 }
 
 // Parses a bgcode buffer (see https://github.com/prusa3d/libbgcode/blob/main/doc/specifications.md)

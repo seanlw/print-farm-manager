@@ -15,6 +15,17 @@ export default function GcodeViewerModal({ gcode, partName, onClose }) {
   const [status, setStatus] = useState('loading'); // loading | error | ready | blocked
   const [error, setError] = useState(null);
   const [proceedAnyway, setProceedAnyway] = useState(false);
+  // This component has no `key` tied to gcode.id, so it doesn't remount when the underlying
+  // G-code changes (e.g. deleted and re-uploaded for the same part while the viewer stays
+  // open) — without this, a "Try anyway" decision made for one large file would silently carry
+  // over and apply to a different file the operator never actually confirmed. Resetting state
+  // during render (React's documented pattern for this) rather than in an effect avoids an
+  // extra render where `tooLarge` is briefly computed from the stale value.
+  const [proceedAnywayForId, setProceedAnywayForId] = useState(gcode.id);
+  if (gcode.id !== proceedAnywayForId) {
+    setProceedAnywayForId(gcode.id);
+    setProceedAnyway(false);
+  }
 
   useEffect(() => {
     function onKey(e) {

@@ -402,6 +402,15 @@ function renderScene(mount, extrude) {
   controls.target.copy(center);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
+  // Without these, nothing stops the camera from crossing the near/far planes — OrbitControls'
+  // own defaults are minDistance: 0 / maxDistance: Infinity, so both the NavPad's zoom buttons
+  // and native mouse-wheel/pinch zoom can push the camera arbitrarily close (clipping through
+  // the model into a nonsensical close-up) or arbitrarily far (clipping the model out of view
+  // entirely, past `camera.far`, with no error and no visual explanation — Reset is the only
+  // way back). Kept well inside the actual near/far planes rather than flush with them so
+  // clipping never happens right at the clamped edge.
+  controls.minDistance = maxDim * 0.05;
+  controls.maxDistance = maxDim * 10;
   controls.update();
 
   function resetView() {

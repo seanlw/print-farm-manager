@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const pako = require('pako');
 const JSZip = require('jszip');
 const { HeatshrinkDecoder } = require('heatshrink-ts');
@@ -166,6 +167,42 @@ describe('decodeBgcode', () => {
       expect(err.code).toBe('UNSUPPORTED_ENCODING');
     }
   });
+
+  test('throws DECOMPRESSED_TOO_LARGE for a Deflate decompression bomb, instead of fully inflating it', () => {
+    // A few hundred KB compressed, but decompresses to well past the 200MB cap — the classic
+    // "small file, huge output" decompression-bomb shape. This must be rejected quickly rather
+    // than fully inflated into memory first.
+    //
+    // Built from a small number of large chunks rather than millions of tiny ones — an array of
+    // ~24 million 9-byte buffers is fast in plain Node but pathologically slow once Jest's
+    // instrumentation wraps it, even though the actual decode logic under test isn't the cause.
+    // Compressed with Node's native zlib rather than pako — raw deflate is a standard format
+    // regardless of which implementation produced it (this also exercises real interop with
+    // the production decode path, which uses pako to decompress), and pako's pure-JS deflate
+    // is pathologically slow specifically under Jest's instrumentation (~1s in plain Node vs.
+    // ~26s here) even though the actual decode logic under test isn't the cause.
+    const line = Buffer.from('G1 X1 Y1\n');
+    const unit = Buffer.concat(Array(Math.ceil((1024 * 1024) / line.length)).fill(line)); // ~1MB
+    const original = Buffer.concat(Array(Math.ceil((210 * 1024 * 1024) / unit.length)).fill(unit)); // ~210MB
+    const compressed = zlib.deflateRawSync(original);
+
+    const file = bgcodeFile(gcodeBlock(compressed, {
+      compression: COMPRESSION_DEFLATE,
+      uncompressedSize: original.length,
+    }));
+
+    const start = Date.now();
+    try {
+      decodeBgcode(file);
+      throw new Error('expected decodeBgcode to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(GcodeDecodeError);
+      expect(err.code).toBe('DECOMPRESSED_TOO_LARGE');
+    }
+    // Should bail well before fully inflating ~210MB — a generous ceiling to avoid test flakiness
+    // on slow CI, while still proving it isn't paying for the full decompression.
+    expect(Date.now() - start).toBeLessThan(5000);
+  });
 });
 
 describe('decode3mf', () => {
@@ -198,6 +235,18 @@ describe('decode3mf', () => {
   test('throws INVALID_3MF for a buffer that is not a valid zip', async () => {
     await expect(decode3mf(Buffer.from('not a zip file'))).rejects.toMatchObject({ code: 'INVALID_3MF' });
   });
+
+  test('throws DECOMPRESSED_TOO_LARGE for a zip-bomb plate entry, instead of fully inflating it', async () => {
+    const line = 'G1 X1 Y1\n';
+    const reps = Math.ceil((210 * 1024 * 1024) / line.length); // ~210MB decompressed
+    const zip = new JSZip();
+    zip.file('Metadata/plate_1.gcode', line.repeat(reps), { compression: 'DEFLATE' });
+    const buffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+    const start = Date.now();
+    await expect(decode3mf(buffer)).rejects.toMatchObject({ code: 'DECOMPRESSED_TOO_LARGE' });
+    expect(Date.now() - start).toBeLessThan(5000);
+  }, 15000);
 });
 
 describe('decodeBgcode against a real PrusaSlicer-generated file', () => {

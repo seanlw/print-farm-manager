@@ -11,7 +11,13 @@ const storage = multer.diskStorage({
   destination: GCODE_DIR,
   filename: (_req, file, cb) => cb(null, Date.now() + '_' + file.originalname),
 });
-const upload = multer({ storage });
+// A generous cap, well above any real sliced G-code this app's supported printer models would
+// produce — bounds per-upload disk usage rather than any expectation of hitting this in
+// practice. Compressed-format decompression bombs are capped separately, at decode time
+// (server/gcode-decode.js), since a small upload can still expand to far more than this at
+// decode time.
+const MAX_UPLOAD_BYTES = 250 * 1024 * 1024;
+const upload = multer({ storage, limits: { fileSize: MAX_UPLOAD_BYTES } });
 
 function runUpload(req, res) {
   return new Promise((resolve, reject) => {

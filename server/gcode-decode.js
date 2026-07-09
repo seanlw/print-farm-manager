@@ -21,23 +21,84 @@ class GcodeDecodeError extends Error {
   }
 }
 
+// Upper bound on decompressed G-code text, enforced independent of what a block/entry claims
+// its own size is. DEFLATE and Heatshrink's compression ratio scales with how repetitive the
+// input is, not with the compressed size itself — a file only a few hundred KB on disk can
+// expand to hundreds of MB to GB in memory in well under a second. Chosen generously above any
+// real slicer's plain G-code output (the demo parts in this app are well under 1MB) while still
+// bounding the worst case.
+const MAX_DECOMPRESSED_BYTES = 200 * 1024 * 1024;
+
+function tooLargeError(maxBytes) {
+  return new GcodeDecodeError('DECOMPRESSED_TOO_LARGE', `Decompressed G-code exceeds the ${Math.floor(maxBytes / (1024 * 1024))}MB limit`);
+}
+
 // MeatPack lookup table — see Prusa-Firmware-MeatPack's meatpack.cpp for the authoritative
 // table this mirrors. Index 15 (0b1111) is reserved as the full-width-character escape flag,
 // never a real output character.
 const MEATPACK_TABLE = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', ' ', '\n', 'G', 'X'];
 
-function decompressBlock(payload, compression, uncompressedSize) {
+// Feeds `payload` through pako's streaming Inflate a chunk at a time (rather than the one-shot
+// `pako.inflateRaw`), so cumulative output can be checked — and decompression aborted — before
+// the rest of a decompression bomb is processed, instead of only finding out how large the
+// result is after it's already been fully inflated into memory.
+function inflateRawCapped(payload, maxBytes) {
+  const inflator = new pako.Inflate({ raw: true });
+  const chunks = [];
+  let total = 0;
+  let exceeded = false;
+  inflator.onData = (chunk) => {
+    if (exceeded) return;
+    total += chunk.length;
+    if (total > maxBytes) { exceeded = true; return; }
+    chunks.push(Buffer.from(chunk));
+  };
+
+  const STEP = 65536;
+  let offset = 0;
+  do {
+    const end = Math.min(offset + STEP, payload.length);
+    inflator.push(payload.subarray(offset, end), end >= payload.length);
+    offset = end;
+  } while (offset < payload.length && !exceeded);
+
+  if (exceeded) throw tooLargeError(maxBytes);
+  if (inflator.err) throw new Error(inflator.msg || 'Deflate decompression failed');
+  return Buffer.concat(chunks);
+}
+
+// Same idea as inflateRawCapped, but for Heatshrink: feed the compressed payload to the decoder
+// in small pieces and drain+check output after each one, rather than processing the whole
+// payload in a single call (which would fully decompress a bomb before we ever get a chance to
+// look at how much output it produced).
+function heatshrinkInflateCapped(payload, windowBits, maxBytes) {
+  const CHUNK = 4096;
+  const decoder = new HeatshrinkDecoder(windowBits, 4, CHUNK);
+  const chunks = [];
+  let total = 0;
+
+  for (let offset = 0; offset < payload.length; offset += CHUNK) {
+    decoder.process(payload.subarray(offset, Math.min(offset + CHUNK, payload.length)));
+    const out = decoder.getOutput();
+    if (out.length > 0) {
+      total += out.length;
+      if (total > maxBytes) throw tooLargeError(maxBytes);
+      chunks.push(Buffer.from(out));
+    }
+  }
+  return Buffer.concat(chunks);
+}
+
+function decompressBlock(payload, compression) {
   switch (compression) {
     case COMPRESSION_NONE:
       return payload;
     case COMPRESSION_DEFLATE:
-      return Buffer.from(pako.inflateRaw(payload));
+      return inflateRawCapped(payload, MAX_DECOMPRESSED_BYTES);
     case COMPRESSION_HEATSHRINK_11:
     case COMPRESSION_HEATSHRINK_12: {
       const windowBits = compression === COMPRESSION_HEATSHRINK_11 ? 11 : 12;
-      const decoder = new HeatshrinkDecoder(windowBits, 4, Math.max(uncompressedSize, 64));
-      decoder.process(payload);
-      return Buffer.from(decoder.getOutput());
+      return heatshrinkInflateCapped(payload, windowBits, MAX_DECOMPRESSED_BYTES);
     }
     default:
       throw new GcodeDecodeError('UNSUPPORTED_COMPRESSION', `Unknown bgcode compression type ${compression}`);
@@ -232,7 +293,7 @@ function decodeBgcode(buffer) {
     offset += checksumSize;
 
     if (blockType === BLOCK_TYPE_GCODE) {
-      const decompressed = decompressBlock(payload, compression, uncompressedSize);
+      const decompressed = decompressBlock(payload, compression);
       if (gcodeEncoding === GCODE_ENCODING_MEATPACK || gcodeEncoding === GCODE_ENCODING_MEATPACK_COMMENTS) {
         gcodeText += decodeMeatpack(decompressed);
       } else if (gcodeEncoding === GCODE_ENCODING_NONE) {
@@ -240,10 +301,41 @@ function decodeBgcode(buffer) {
       } else {
         throw new GcodeDecodeError('UNSUPPORTED_ENCODING', `Unknown bgcode GCode block encoding ${gcodeEncoding}`);
       }
+      // decompressBlock caps each individual block's own output, but a file with many blocks
+      // that each stay just under that cap could still sum to an unbounded total — check the
+      // running total too.
+      if (gcodeText.length > MAX_DECOMPRESSED_BYTES) throw tooLargeError(MAX_DECOMPRESSED_BYTES);
     }
   }
 
   return gcodeText;
+}
+
+// Reads a zip entry's text via JSZip's streaming API instead of `.async('string')`, so
+// cumulative output can be checked — and the read aborted — before a zip-bomb entry (a small
+// compressed size that decompresses to a huge amount of text) is fully inflated into memory.
+function readZipEntryTextCapped(zipObject, maxBytes) {
+  return new Promise((resolve, reject) => {
+    let total = 0;
+    let exceeded = false;
+    const chunks = [];
+    const stream = zipObject.internalStream('string');
+    stream
+      .on('data', (chunk) => {
+        if (exceeded) return;
+        total += chunk.length;
+        if (total > maxBytes) {
+          exceeded = true;
+          stream.pause();
+          reject(tooLargeError(maxBytes));
+          return;
+        }
+        chunks.push(chunk);
+      })
+      .on('error', (err) => { if (!exceeded) reject(err); })
+      .on('end', () => { if (!exceeded) resolve(chunks.join('')); })
+      .resume();
+  });
 }
 
 // Extracts plain-text plate G-code from a .3mf project archive (a zip container).
@@ -264,7 +356,7 @@ async function decode3mf(buffer) {
     throw new GcodeDecodeError('NO_GCODE_IN_3MF', 'No plate G-code found inside this .3mf file');
   }
 
-  return zip.files[gcodeEntry].async('string');
+  return readZipEntryTextCapped(zip.files[gcodeEntry], MAX_DECOMPRESSED_BYTES);
 }
 
 module.exports = { decodeBgcode, decode3mf, GcodeDecodeError };

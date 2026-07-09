@@ -10,6 +10,13 @@
 // E), so E deltas must be accumulated onto a running total even while X/Y/Z stay absolute.
 // Tracking both under one flag misreads every E value as an absolute position instead of a
 // small per-move delta, which makes the extrusion-vs-travel check below essentially random.
+//
+// PrusaSlicer (and Bambu/Orca, which share its lineage) tags each section of G-code with a
+// `;TYPE:<feature>` comment. Segments under `Custom` (custom start/end G-code, including the
+// nozzle-priming "intro line" drawn away from the actual part) and `Skirt/Brim` (the loop
+// printed around the part's footprint before the real print starts) aren't part of the part
+// being previewed, so they're excluded from the rendered geometry.
+const EXCLUDED_FEATURE_TYPES = new Set(['Custom', 'Skirt/Brim']);
 
 self.onmessage = (e) => {
   const text = e.data;
@@ -20,12 +27,17 @@ self.onmessage = (e) => {
   let x = 0, y = 0, z = 0, e_ = 0;
   let relative = false;
   let eRelative = false;
+  let currentType = null;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const semi = line.indexOf(';');
     const cmd = (semi === -1 ? line : line.slice(0, semi)).trim();
-    if (!cmd) continue;
+    if (!cmd) {
+      const trimmed = line.trimStart();
+      if (trimmed.startsWith(';TYPE:')) currentType = trimmed.slice(6).trim();
+      continue;
+    }
 
     const first = cmd[0];
     if (first === 'M' || first === 'm') {
@@ -84,7 +96,7 @@ self.onmessage = (e) => {
 
     if (!hasXY && z === prevZ) continue; // no actual movement (e.g. bare E retraction)
 
-    if (e_ > prevE) {
+    if (e_ > prevE && !EXCLUDED_FEATURE_TYPES.has(currentType)) {
       extrude.push(prevX, prevZ, prevY, x, z, y); // Y/Z swapped: three.js Y is "up"
     }
   }

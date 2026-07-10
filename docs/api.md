@@ -360,9 +360,13 @@ Returns `404` if not found.
 
 Optional query param `?part_id=N` to filter by part.
 
-Returns all G-code records. Each record includes `part_id`, `printer_model`, `filename`, `filepath`, `parts_per_plate`, `est_print_secs`, `material_grams`, `ams_slot`, `created_at`.
+Returns all G-code records. Each record includes `part_id`, `printer_model`, `filename`, `filepath`, `parts_per_plate`, `est_print_secs`, `material_grams`, `ams_slot`, `file_size`, `created_at`.
 
 `filepath` stores only the filename (not an absolute path) — the server resolves the full path at runtime using its own `server/gcode/` directory. This makes the DB portable across machines.
+
+When filtered by `?part_id=`, results are ordered oldest-first (`created_at` ascending, `id` as a tiebreak) — callers that treat one file as "the" representative one for a part (e.g. the Part Details 3D Viewer) rely on this order rather than sorting client-side. The unfiltered list is newest-first.
+
+`file_size` is populated at upload time and, for any row uploaded before this column existed, backfilled lazily the first time it's returned by this endpoint (an on-disk `stat()`, persisted back to the row) — it may briefly be `null` for old rows on their very first request after an upgrade.
 
 ### `POST /api/gcodes/parse-filename`
 
@@ -398,7 +402,7 @@ Upload a G-code file and create a DB record. `Content-Type: multipart/form-data`
 - `material_grams` (optional) — per-plate material weight in grams
 - `ams_slot` (optional) — Bambu only
 
-Returns `201` with created G-code record. Returns `409` if a G-code for this `(part_id, printer_model)` combination already exists.
+Returns `201` with created G-code record. Returns `409` if a G-code for this `(part_id, printer_model)` combination already exists. Returns `400` if the uploaded file exceeds the 250 MB `multer` `limits.fileSize` cap (error message from `multer`, e.g. "File too large").
 
 ### `PUT /api/gcodes/:id`
 
@@ -427,7 +431,7 @@ Historical jobs (`finished`, `failed`, `cancelled`) are retained with their `gco
 
 Returns the G-code as plain text (`Content-Type: text/plain`), normalized regardless of source format — used by the Part Details 3D viewer. `.gcode` files are served as-is; `.bgcode` (Prusa's binary format) and `.3mf` (Bambu's zip project file) are decoded/extracted server-side via `server/gcode-decode.js`, so the client only ever deals with plain text.
 
-Returns `404` if the record or its on-disk file doesn't exist. Returns `422` with `{ "error": "...", "code": "..." }` if the file can't be decoded (e.g. `INVALID_BGCODE`, `UNSUPPORTED_COMPRESSION`, `NO_GCODE_IN_3MF` — see `server/gcode-decode.js` for the full set).
+Returns `404` if the record or its on-disk file doesn't exist. Returns `422` with `{ "error": "...", "code": "..." }` if the file can't be decoded — either one of `server/gcode-decode.js`'s typed codes (e.g. `INVALID_BGCODE`, `UNSUPPORTED_COMPRESSION`, `NO_GCODE_IN_3MF`, `DECOMPRESSED_TOO_LARGE` — decompressed output over the 200 MB cap — see that file for the full set), or `DECODE_FAILED` for any other unexpected decode error (this route converts every decode failure to a `422`, not just the explicitly-typed ones, so a malformed file can't crash the request).
 
 ---
 

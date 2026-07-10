@@ -39,6 +39,7 @@ beforeAll(() => {
       parts_per_plate INTEGER NOT NULL,
       est_print_secs INTEGER, material_grams REAL, ams_slot INTEGER,
       allowed_groups TEXT, required_material TEXT, required_color TEXT,
+      file_size INTEGER,
       created_at INTEGER NOT NULL
     );
     CREATE TABLE printers (

@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { decodeBgcode, decode3mf, GcodeDecodeError } = require('../gcode-decode');
 const router = express.Router();
 
 const GCODE_DIR = path.join(__dirname, '..', 'gcode');
@@ -10,7 +11,13 @@ const storage = multer.diskStorage({
   destination: GCODE_DIR,
   filename: (_req, file, cb) => cb(null, Date.now() + '_' + file.originalname),
 });
-const upload = multer({ storage });
+// A generous cap, well above any real sliced G-code this app's supported printer models would
+// produce — bounds per-upload disk usage rather than any expectation of hitting this in
+// practice. Compressed-format decompression bombs are capped separately, at decode time
+// (server/gcode-decode.js), since a small upload can still expand to far more than this at
+// decode time.
+const MAX_UPLOAD_BYTES = 250 * 1024 * 1024;
+const upload = multer({ storage, limits: { fileSize: MAX_UPLOAD_BYTES } });
 
 function runUpload(req, res) {
   return new Promise((resolve, reject) => {
@@ -94,11 +101,38 @@ function normalizeMaterialGrams(raw) {
 // makes a part schedulable. Tests pass null so there is no live scheduler dependency.
 module.exports = (db, scheduler = null) => {
   // GET /api/gcodes — list, optionally filtered by part_id
+  // The part_id-filtered branch is ordered oldest-first (by created_at, with id as a tiebreak
+  // for same-millisecond inserts) so "the first gcode for this part" is a stable, meaningful
+  // concept for callers — e.g. the 3D Viewer previews gcodes[0] as the part's representative
+  // file — rather than relying on SQLite's unspecified row order for a query with no ORDER BY.
   router.get('/', (req, res) => {
     const { part_id } = req.query;
     const gcodes = part_id
-      ? db.prepare('SELECT * FROM gcodes WHERE part_id = ?').all(part_id)
+      ? db.prepare('SELECT * FROM gcodes WHERE part_id = ? ORDER BY created_at ASC, id ASC').all(part_id)
       : db.prepare('SELECT * FROM gcodes ORDER BY created_at DESC').all();
+
+    // Backfill file_size for rows that predate that column (ALTER TABLE leaves existing rows
+    // NULL) or otherwise never got it recorded. Lazy, on-access backfill rather than a
+    // blocking loop over every row at server startup — that would scale with however large the
+    // pre-existing backlog is and block every request (health checks, printer polling, the
+    // whole app) until it finished. This way each row self-heals the moment it's actually
+    // listed, at the cost of one fs.statSync() per not-yet-backfilled row per request.
+    const updateFileSize = db.prepare('UPDATE gcodes SET file_size = ? WHERE id = ?');
+    for (const gcode of gcodes) {
+      if (gcode.file_size == null) {
+        const fullPath = path.join(GCODE_DIR, gcode.filepath.split(/[\\/]/).pop());
+        try {
+          const size = fs.statSync(fullPath).size;
+          gcode.file_size = size;
+          updateFileSize.run(size, gcode.id);
+        } catch (_) {
+          // File missing from disk — leave file_size null. Existing null-safe client checks
+          // already treat that as "unknown," and DELETE/preview already report a missing file
+          // explicitly if the operator acts on this row directly.
+        }
+      }
+    }
+
     res.json(gcodes);
   });
 
@@ -158,8 +192,8 @@ module.exports = (db, scheduler = null) => {
     const parsedRequiredColor    = required_color    && required_color    !== '' ? required_color.trim()    : null;
 
     const gcode = db.prepare(`
-      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, est_print_secs, material_grams, ams_slot, allowed_groups, required_material, required_color, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, est_print_secs, material_grams, ams_slot, allowed_groups, required_material, required_color, file_size, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       part_id,
       printer_model,
@@ -172,6 +206,7 @@ module.exports = (db, scheduler = null) => {
       parsedAllowedGroups,
       parsedRequiredMaterial,
       parsedRequiredColor,
+      req.file.size,
       Date.now()
     );
 
@@ -224,6 +259,46 @@ module.exports = (db, scheduler = null) => {
       .run(estPrintSecs, materialGrams, allowedGroups, requiredMaterial, requiredColor, req.params.id);
 
     res.json(db.prepare('SELECT * FROM gcodes WHERE id = ?').get(req.params.id));
+  });
+
+  // GET /api/gcodes/:id/preview — plain-text G-code for the 3D viewer, normalized
+  // regardless of source format (.gcode passes through, .bgcode/.3mf are decoded server-side
+  // so the client only ever has to deal with plain G-code text).
+  router.get('/:id/preview', async (req, res) => {
+    const gcode = db.prepare('SELECT * FROM gcodes WHERE id = ?').get(req.params.id);
+    if (!gcode) return res.status(404).json({ error: 'G-code not found' });
+
+    const gcodeFilename = gcode.filepath.split(/[\\/]/).pop();
+    const fullPath = path.join(GCODE_DIR, gcodeFilename);
+    if (!fs.existsSync(fullPath)) {
+      return res.status(404).json({ error: 'G-code file is missing from disk' });
+    }
+
+    const ext = path.extname(gcode.filename).toLowerCase();
+    try {
+      const buffer = fs.readFileSync(fullPath);
+      let text;
+      if (ext === '.bgcode') {
+        text = decodeBgcode(buffer);
+      } else if (ext === '.3mf') {
+        text = await decode3mf(buffer);
+      } else {
+        text = buffer.toString('utf8');
+      }
+      res.set('Content-Type', 'text/plain').send(text);
+    } catch (err) {
+      if (err instanceof GcodeDecodeError) {
+        return res.status(422).json({ error: err.message, code: err.code });
+      }
+      // Any other decode failure (e.g. a corrupt Deflate/Heatshrink payload inside an
+      // otherwise well-formed bgcode block, or a corrupt entry inside an otherwise valid .3mf
+      // zip) must still resolve to a response rather than reject — this route runs on Express
+      // 4, which doesn't catch rejected promises from async handlers, and the app's own
+      // top-level `unhandledRejection` handler treats any that escape as fatal and exits the
+      // process. A malformed uploaded file should return a 422, not take down the server.
+      console.error(`[gcodes] preview decode failed for gcode ${req.params.id}:`, err);
+      return res.status(422).json({ error: 'Failed to decode this G-code file — it may be corrupt.', code: 'DECODE_FAILED' });
+    }
   });
 
   // DELETE /api/gcodes/:id

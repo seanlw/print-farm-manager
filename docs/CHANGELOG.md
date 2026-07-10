@@ -2,6 +2,41 @@
 
 ---
 
+## 2026-07-09 — 3D preview of a part's G-code from the Part Details panel
+
+Operators previously had no way to visually confirm what a part would actually print without opening the G-code file in slicer software — the Details panel only ever showed filenames. A **3D Viewer** button on each part's row, next to the Details toggle, opens a modal preview of the part's attached G-code, without leaving the Projects page. A part can have multiple G-code files (one per printer model it's sliced for), but they're all the same physical item, so the viewer previews the oldest one rather than offering a per-file picker.
+
+**Format support.** The app accepts `.gcode`, Prusa's binary `.bgcode`, and Bambu's zip-based `.3mf` on upload, and the viewer supports all three. Decoding happens server-side (`server/gcode-decode.js`, exposed via `GET /api/gcodes/:id/preview`) so the client only ever deals with plain text regardless of source format. `.bgcode` decoding implements Prusa's published block format ([libbgcode spec](https://github.com/prusa3d/libbgcode/blob/main/doc/specifications.md)): typed blocks, each optionally Deflate- or Heatshrink-compressed and/or MeatPack-encoded. The MeatPack decoder is a port of libbgcode's own reference implementation and is verified against a real PrusaSlicer-generated file and its official reference decode, committed as a test fixture — every `G0`-`G3` move line matches exactly (header/metadata comments aren't compared, since the reference's are reconstructed from blocks this decoder deliberately doesn't read). `.3mf` decoding extracts the plain-text plate G-code already stored in the archive at `Metadata/plate_*.gcode`.
+
+**Client-side parsing and rendering.** A Web Worker (`gcode-parser.worker.js`) parses `G0`-`G3` moves off the main thread into a flat position buffer. X/Y/Z positioning mode (`G90`/`G91`), extruder mode (`M82`/`M83`), and `G92` (Set Position) are tracked as independent state, since real slicer output mixes them — PrusaSlicer's standard preamble is absolute XYZ with relative E. Only extrusion moves are kept: travel moves, and any section tagged `;TYPE:Custom` or `;TYPE:Skirt/Brim` (the nozzle-priming line and the skirt/brim loop, per the G-code comment convention PrusaSlicer, Bambu, and Orca share), are excluded, so the preview shows the part itself rather than print setup. `G2`/`G3` arc moves are interpolated into several small chord segments (using the `I`/`J` center offset, sweep direction, and helical Z) rather than one chord spanning the whole arc — a single chord is only a good approximation for a small sweep; for a large-radius, large-sweep arc (a rounded part's wall, sliced as one long arc command) a single chord visibly cuts straight across empty space instead of following the curve. Segments render as fat lines (`three/addons/lines`) with a constant screen-space width — so real toolpath gaps mostly disappear into the line's own thickness at typical zoom rather than reading as visible holes — shaded with the same faux-directional-lighting technique OctoPrint-PrettyGCode uses (each segment's travel direction is dotted against a fixed light vector to pick an HSL lightness), but restricted to a single hue rather than PrettyGCode's per-feature-type color scheme, so the part reads as a lit solid instead of a flat silhouette without turning into a rainbow. `OrbitControls` plus a custom SVG D-pad (matching the camera-control layout found in most CAD/model-viewer UIs) handle rotate/zoom/reset/isometric-view; the camera's zoom distance is clamped to a safe range well inside the camera's own near/far planes (not flush with them) so it can't be zoomed out of view or into the geometry's interior.
+
+**Safety and resource limits.** Decompression is capped at 200MB of output, checked incrementally via streaming APIs (pako's `Inflate`, chunked Heatshrink feeding, JSZip's streaming reader) rather than after the fact — compression ratio scales with how repetitive the input is, not its size, so a small file can expand to hundreds of MB in well under a second. A file with many blocks that each individually stay under the cap but sum past it is also caught. Upload size is capped at 250MB (previously unbounded). Any decode failure — not just the explicitly-typed cases — returns `422` rather than propagating: an uncaught error thrown from this app's async route handlers becomes a fatal, whole-server-crashing unhandled rejection on this Express 4 setup, so a single malformed file could otherwise take down the app for every user. `GcodeViewerModal` disposes its Three.js geometry and materials on close (avoiding a GPU memory leak that `WebGLRenderer.dispose()` alone doesn't cover) and resets its large-file "proceed anyway" override whenever the underlying G-code changes, so a decision made for one file can't silently carry over to a different one.
+
+**Other correctness fixes bundled in:** `GET /api/gcodes?part_id=` now orders results oldest-first instead of leaving row order unspecified, since the viewer's "first file" behavior depends on it. `file_size` (used to warn or block before previewing very large files) is backfilled lazily, on first access, for any G-code row that predates the column, rather than left permanently unset. `gcodes.file_size` is also covered by the existing backup/restore column round-trip regression suite (`server/tests/backup-restore.test.js`) — that suite's restore path already derives its column list from the live schema rather than a hand-maintained one (a prior fix, unrelated to this feature), so the new column round-trips correctly with no restore-side changes needed; the test's schema and fixtures just hadn't been extended to exercise it until now.
+
+Verified: full backend test suite passes, including decode regression coverage (every bgcode compression/encoding combination, the byte-exact real-fixture comparison, decompression-bomb rejection for both `.bgcode` and `.3mf`), route-level tests for the preview endpoint, ordering, and the `file_size` backfill, and a backup/restore round-trip assertion confirming `file_size` survives an export-then-restore cycle. No client-side test runner exists in this repo, so the viewer itself — all three formats, camera controls, size-guard states, repeated open/close cycles, and arc-heavy (rounded/circular) parts — was verified manually in the browser against real slicer output, with no console errors and no regressions.
+
+### Changes
+- `server/gcode-decode.js` (new): `decodeBgcode()`, `decode3mf()`, `GcodeDecodeError`, capped streaming decompression helpers.
+- `server/routes/gcodes.js`: new `GET /:id/preview` route; `POST /upload` stores `file_size` and enforces a 250MB upload limit; `GET /` orders results and lazily backfills `file_size`.
+- `server/db.js`: new `gcodes.file_size` column (defensive `ALTER TABLE`).
+- `server/tests/gcode-decode.test.js` (new), `server/tests/gcodes.test.js`, `server/tests/backup-restore.test.js`: regression coverage described above.
+- `server/tests/fixtures/` (new): real `.bgcode` + reference-decode pair from `prusa3d/libbgcode`'s own test suite.
+- `client/src/GcodeViewerModal.jsx` (new), `client/src/gcode-parser.worker.js` (new).
+- `client/src/pages/Projects.jsx`: "3D Viewer" button on each part's row, next to the Details toggle (shown once the part has a G-code file).
+- `docs/api.md`, `docs/server.md`, `docs/web-app.md`: documented the new endpoint, module, and UI action.
+
+### Dependencies added
+**Root (server):**
+- `pako` ^3.0.1
+- `heatshrink-ts` ^0.1.0
+- `jszip` ^3.10.1
+
+**Client:**
+- `three` ^0.185.1
+
+---
+
 ## 2026-07-04 — Add security response headers via helmet
 
 Ran an OWASP ZAP baseline scan against the running container (0 High findings, but 2 Medium: missing CSP, missing anti-clickjacking header) plus several Low findings (`X-Content-Type-Options` missing, `X-Powered-By` leaking Express, `Permissions-Policy` missing).

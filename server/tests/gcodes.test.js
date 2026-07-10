@@ -43,6 +43,7 @@ beforeAll(() => {
       allowed_groups TEXT,
       required_material TEXT,
       required_color TEXT,
+      file_size INTEGER,
       created_at INTEGER NOT NULL
     );
     CREATE TABLE printers (
@@ -80,6 +81,7 @@ beforeAll(() => {
   db.exec(`INSERT INTO printer_models VALUES ('x1c',  'X1 Carbon',  'bambu')`);
   db.exec(`INSERT INTO printer_models VALUES ('a1',   'A1',         'bambu')`);
   db.exec(`INSERT INTO printer_models VALUES ('p1s',  'P1S',        'bambu')`);
+  db.exec(`INSERT INTO printer_models VALUES ('xl',   'XL',         'prusa')`);
 
   if (!fs.existsSync(GCODE_DIR)) fs.mkdirSync(GCODE_DIR, { recursive: true });
 
@@ -186,6 +188,24 @@ describe('POST /api/gcodes/upload', () => {
     expect(res.status).toBe(201);
     expect(res.body.printer_model).toBe('mk4s');
     expect(res.body.parts_per_plate).toBe(4);
+    uploadedPath = res.body.filepath;
+  });
+
+  test('populates file_size from the uploaded file', async () => {
+    const tmpFile = makeTempGcode('file_size_test.bgcode');
+    const expectedSize = fs.statSync(tmpFile).size;
+
+    const res = await request(app)
+      .post('/api/gcodes/upload')
+      .attach('file', tmpFile)
+      .field('part_id', '1')
+      .field('parts_per_plate', '1')
+      .field('printer_model', 'xl'); // distinct model to avoid the (part_id, printer_model) 409
+
+    fs.unlinkSync(tmpFile);
+
+    expect(res.status).toBe(201);
+    expect(res.body.file_size).toBe(expectedSize);
     uploadedPath = res.body.filepath;
   });
 
@@ -307,6 +327,117 @@ function insertGcode(filename, filepath) {
   return row.lastInsertRowid;
 }
 
+describe('GET /api/gcodes?part_id=', () => {
+  // Callers (e.g. the 3D Viewer, which always previews gcodes[0] as the part's representative
+  // file) depend on this list being in a stable, meaningful order — not whatever unspecified
+  // order SQLite happens to return for a query with no ORDER BY.
+  test('orders results oldest-first by created_at', () => {
+    const partId = db.prepare(
+      'INSERT INTO parts (project_id, name, target_qty, created_at, updated_at) VALUES (1, ?, 1, ?, ?)'
+    ).run('Order Test Part', Date.now(), Date.now()).lastInsertRowid;
+
+    const insert = db.prepare(`
+      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, created_at)
+      VALUES (?, 'mk4s', ?, ?, 1, ?)
+    `);
+    const newest = insert.run(partId, 'newest.gcode', 'newest.gcode', 3000).lastInsertRowid;
+    const oldest = insert.run(partId, 'oldest.gcode', 'oldest.gcode', 1000).lastInsertRowid;
+    const middle = insert.run(partId, 'middle.gcode', 'middle.gcode', 2000).lastInsertRowid;
+
+    return request(app).get(`/api/gcodes?part_id=${partId}`).then((res) => {
+      expect(res.status).toBe(200);
+      expect(res.body.map((g) => g.id)).toEqual([oldest, middle, newest]);
+    });
+  });
+
+  test('breaks ties on identical created_at by id, so insertion order is preserved', () => {
+    const partId = db.prepare(
+      'INSERT INTO parts (project_id, name, target_qty, created_at, updated_at) VALUES (1, ?, 1, ?, ?)'
+    ).run('Tie Test Part', Date.now(), Date.now()).lastInsertRowid;
+
+    const insert = db.prepare(`
+      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, created_at)
+      VALUES (?, 'mk4s', ?, ?, 1, ?)
+    `);
+    const sameTimestamp = 5000;
+    const first = insert.run(partId, 'a.gcode', 'a.gcode', sameTimestamp).lastInsertRowid;
+    const second = insert.run(partId, 'b.gcode', 'b.gcode', sameTimestamp).lastInsertRowid;
+
+    return request(app).get(`/api/gcodes?part_id=${partId}`).then((res) => {
+      expect(res.status).toBe(200);
+      expect(res.body.map((g) => g.id)).toEqual([first, second]);
+    });
+  });
+
+  test('backfills file_size on access for a row that predates that column, and persists it', () => {
+    const partId = db.prepare(
+      'INSERT INTO parts (project_id, name, target_qty, created_at, updated_at) VALUES (1, ?, 1, ?, ?)'
+    ).run('Backfill Test Part', Date.now(), Date.now()).lastInsertRowid;
+
+    const filename = `backfill_${Date.now()}.gcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    const content = 'G1 X1 Y1\nG1 X2 Y2\n';
+    fs.writeFileSync(fullPath, content);
+
+    const id = db.prepare(`
+      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, created_at)
+      VALUES (?, 'mk4s', ?, ?, 1, ?)
+    `).run(partId, filename, filename, Date.now()).lastInsertRowid;
+
+    expect(db.prepare('SELECT file_size FROM gcodes WHERE id = ?').get(id).file_size).toBeNull();
+
+    return request(app).get(`/api/gcodes?part_id=${partId}`).then((res) => {
+      expect(res.status).toBe(200);
+      expect(res.body[0].file_size).toBe(content.length);
+      // Persisted, not just reflected in this one response.
+      expect(db.prepare('SELECT file_size FROM gcodes WHERE id = ?').get(id).file_size).toBe(content.length);
+      fs.unlinkSync(fullPath);
+    });
+  });
+
+  test('leaves file_size null (without crashing) when the on-disk file is missing', () => {
+    const partId = db.prepare(
+      'INSERT INTO parts (project_id, name, target_qty, created_at, updated_at) VALUES (1, ?, 1, ?, ?)'
+    ).run('Backfill Missing File Test Part', Date.now(), Date.now()).lastInsertRowid;
+
+    const id = db.prepare(`
+      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, created_at)
+      VALUES (?, 'mk4s', 'ghost_backfill.gcode', 'ghost_backfill.gcode', 1, ?)
+    `).run(partId, Date.now()).lastInsertRowid;
+
+    return request(app).get(`/api/gcodes?part_id=${partId}`).then((res) => {
+      expect(res.status).toBe(200);
+      expect(res.body[0].file_size).toBeNull();
+      expect(db.prepare('SELECT file_size FROM gcodes WHERE id = ?').get(id).file_size).toBeNull();
+    });
+  });
+
+  test('never re-stats or overwrites a row that already has a file_size', () => {
+    const partId = db.prepare(
+      'INSERT INTO parts (project_id, name, target_qty, created_at, updated_at) VALUES (1, ?, 1, ?, ?)'
+    ).run('Backfill Already-Set Test Part', Date.now(), Date.now()).lastInsertRowid;
+
+    const filename = `already_set_${Date.now()}.gcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    fs.writeFileSync(fullPath, 'G1 X1 Y1\nG1 X2 Y2\n'); // real on-disk size differs from below
+
+    const staleSize = 999999;
+    const id = db.prepare(`
+      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, file_size, created_at)
+      VALUES (?, 'mk4s', ?, ?, 1, ?, ?)
+    `).run(partId, filename, filename, staleSize, Date.now()).lastInsertRowid;
+
+    return request(app).get(`/api/gcodes?part_id=${partId}`).then((res) => {
+      expect(res.status).toBe(200);
+      // Still the stale stored value, not the real file's actual size — proves the backfill
+      // never touches a row where file_size is already non-null.
+      expect(res.body[0].file_size).toBe(staleSize);
+      expect(db.prepare('SELECT file_size FROM gcodes WHERE id = ?').get(id).file_size).toBe(staleSize);
+      fs.unlinkSync(fullPath);
+    });
+  });
+});
+
 describe('DELETE /api/gcodes/:id', () => {
   test('returns 404 for unknown id', async () => {
     const res = await request(app).delete('/api/gcodes/99999');
@@ -386,5 +517,133 @@ describe('DELETE /api/gcodes/:id', () => {
     const job = db.prepare('SELECT gcode_id FROM jobs WHERE id = ?').get(jobId);
     expect(job).toBeDefined();
     expect(job.gcode_id).toBeNull();
+  });
+});
+
+// ── GET /api/gcodes/:id/preview ─────────────────────────────────────────────
+// The exhaustive bgcode/3mf decode matrix (compression/encoding variants, error cases)
+// lives in server/tests/gcode-decode.test.js against gcode-decode.js directly. These
+// tests only prove the route dispatches correctly by extension and handles 404/422.
+const JSZip = require('jszip');
+
+function minimalBgcodeFile(gcodeText) {
+  const header = Buffer.alloc(10);
+  header.write('GCDE', 0, 'ascii');
+  header.writeUInt32LE(1, 4);
+  header.writeUInt16LE(0, 8);
+
+  const payload = Buffer.from(gcodeText, 'utf8');
+  const blockHeader = Buffer.alloc(8);
+  blockHeader.writeUInt16LE(1, 0); // block type: GCode
+  blockHeader.writeUInt16LE(0, 2); // compression: none
+  blockHeader.writeUInt32LE(payload.length, 4);
+  const params = Buffer.alloc(2); // encoding: none
+
+  return Buffer.concat([header, blockHeader, params, payload]);
+}
+
+describe('GET /api/gcodes/:id/preview', () => {
+  const written = [];
+
+  afterEach(() => {
+    while (written.length) {
+      const p = written.pop();
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
+  });
+
+  test('returns 404 for unknown id', async () => {
+    const res = await request(app).get('/api/gcodes/99999/preview');
+    expect(res.status).toBe(404);
+  });
+
+  test('returns 404 when the file is missing from disk', async () => {
+    const filename = `missing_${Date.now()}.gcode`;
+    const id = insertGcode(filename, filename);
+    const res = await request(app).get(`/api/gcodes/${id}/preview`);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/missing from disk/i);
+  });
+
+  test('serves a plain .gcode file as-is', async () => {
+    const filename = `preview_${Date.now()}.gcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    fs.writeFileSync(fullPath, 'G1 X10 Y20\n');
+    written.push(fullPath);
+    const id = insertGcode(filename, filename);
+
+    const res = await request(app).get(`/api/gcodes/${id}/preview`);
+    expect(res.status).toBe(200);
+    expect(res.text).toBe('G1 X10 Y20\n');
+    expect(res.headers['content-type']).toMatch(/text\/plain/);
+  });
+
+  test('decodes a .bgcode file to plain text', async () => {
+    const filename = `preview_${Date.now()}.bgcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    fs.writeFileSync(fullPath, minimalBgcodeFile('G1 X1 Y1\n'));
+    written.push(fullPath);
+    const id = insertGcode(filename, filename);
+
+    const res = await request(app).get(`/api/gcodes/${id}/preview`);
+    expect(res.status).toBe(200);
+    expect(res.text).toBe('G1 X1 Y1\n');
+  });
+
+  test('decodes a .3mf file to plain text', async () => {
+    const filename = `preview_${Date.now()}.3mf`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    const zip = new JSZip();
+    zip.file('Metadata/plate_1.gcode', 'G1 X5 Y5\n');
+    fs.writeFileSync(fullPath, await zip.generateAsync({ type: 'nodebuffer' }));
+    written.push(fullPath);
+    const id = insertGcode(filename, filename);
+
+    const res = await request(app).get(`/api/gcodes/${id}/preview`);
+    expect(res.status).toBe(200);
+    expect(res.text).toBe('G1 X5 Y5\n');
+  });
+
+  test('returns 422 with a typed error code when a .bgcode file fails to decode', async () => {
+    const filename = `preview_bad_${Date.now()}.bgcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    fs.writeFileSync(fullPath, 'not a real bgcode file');
+    written.push(fullPath);
+    const id = insertGcode(filename, filename);
+
+    const res = await request(app).get(`/api/gcodes/${id}/preview`);
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('INVALID_BGCODE');
+  });
+
+  test('returns 422 (not a crash) when a structurally valid bgcode block has a corrupt payload for a known compression type', async () => {
+    // Passes the magic-header and every block-bounds check (a real bgcode parser would accept
+    // this as a well-formed GCode block declaring Deflate compression), but the "compressed"
+    // bytes aren't valid deflate data — pako throws a plain Error here, not a GcodeDecodeError,
+    // which previously bypassed the route's typed-error check and crashed the whole process
+    // (Express 4 doesn't catch rejected promises from async handlers, and this app's top-level
+    // unhandledRejection handler exits on anything that escapes).
+    const header = Buffer.alloc(10);
+    header.write('GCDE', 0, 'ascii');
+    header.writeUInt32LE(1, 4);
+    header.writeUInt16LE(0, 8);
+
+    const garbage = Buffer.from([0x00, 0x01, 0x02, 0x03, 0xff, 0xff, 0x10, 0x20]);
+    const blockHeader = Buffer.alloc(12);
+    blockHeader.writeUInt16LE(1, 0);   // block type: GCode
+    blockHeader.writeUInt16LE(1, 2);   // compression: Deflate
+    blockHeader.writeUInt32LE(100, 4); // claimed uncompressed size
+    blockHeader.writeUInt32LE(garbage.length, 8);
+    const params = Buffer.alloc(2); // encoding: none
+
+    const filename = `preview_corrupt_deflate_${Date.now()}.bgcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    fs.writeFileSync(fullPath, Buffer.concat([header, blockHeader, params, garbage]));
+    written.push(fullPath);
+    const id = insertGcode(filename, filename);
+
+    const res = await request(app).get(`/api/gcodes/${id}/preview`);
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('DECODE_FAILED');
   });
 });

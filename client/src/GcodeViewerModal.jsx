@@ -353,9 +353,9 @@ function renderScene(mount, extrude) {
     }
     const heightRange = Math.max(maxHeight - minHeight, 0.001);
 
+    // Same hue throughout (no rainbow) — only lightness varies by height, so layer lines and
+    // curved surfaces stay visually distinguishable without turning into a height-map gradient.
     const color = new THREE.Color();
-    const low = new THREE.Color(0x3b82f6);
-    const high = new THREE.Color(0xfbbf24);
     const colors = new Float32Array(segmentCount * 6);
 
     for (let s = 0; s < segmentCount; s++) {
@@ -364,11 +364,11 @@ function renderScene(mount, extrude) {
       expandBounds(extrude[o + 3], extrude[o + 4], extrude[o + 5]);
 
       const tStart = (extrude[o + 1] - minHeight) / heightRange;
-      color.copy(low).lerp(high, tStart);
+      color.setHSL(0.62, 0.65, 0.35 + tStart * 0.4);
       colors[o] = color.r; colors[o + 1] = color.g; colors[o + 2] = color.b;
 
       const tEnd = (extrude[o + 4] - minHeight) / heightRange;
-      color.copy(low).lerp(high, tEnd);
+      color.setHSL(0.62, 0.65, 0.35 + tEnd * 0.4);
       colors[o + 3] = color.r; colors[o + 4] = color.g; colors[o + 5] = color.b;
     }
 

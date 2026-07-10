@@ -346,15 +346,15 @@ function renderScene(mount, extrude) {
   const segmentCount = Math.floor(extrude.length / 6);
   let lineMaterial;
   if (segmentCount > 0) {
-    let minHeight = Infinity, maxHeight = -Infinity;
-    for (let i = 1; i < extrude.length; i += 3) {
-      if (extrude[i] < minHeight) minHeight = extrude[i];
-      if (extrude[i] > maxHeight) maxHeight = extrude[i];
-    }
-    const heightRange = Math.max(maxHeight - minHeight, 0.001);
+    // Faux directional shading, the same technique OctoPrint-PrettyGCode uses: rather than
+    // coloring by height (a smooth gradient that reads as flat once a surface levels out), each
+    // segment's own travel direction is dotted against a fixed "light" vector to pick an HSL
+    // lightness for a single hue. Segments facing toward the light come out brighter, segments
+    // facing away come out darker — the same cue real lighting gives a lit solid — without
+    // needing actual surface normals or a second (multi-hue) color dimension.
+    const lightLen = Math.hypot(0.6, 0.35, 0.7);
+    const lightX = 0.6 / lightLen, lightY = 0.35 / lightLen, lightZ = 0.7 / lightLen;
 
-    // Same hue throughout (no rainbow) — only lightness varies by height, so layer lines and
-    // curved surfaces stay visually distinguishable without turning into a height-map gradient.
     const color = new THREE.Color();
     const colors = new Float32Array(segmentCount * 6);
 
@@ -363,12 +363,18 @@ function renderScene(mount, extrude) {
       expandBounds(extrude[o], extrude[o + 1], extrude[o + 2]);
       expandBounds(extrude[o + 3], extrude[o + 4], extrude[o + 5]);
 
-      const tStart = (extrude[o + 1] - minHeight) / heightRange;
-      color.setHSL(0.62, 0.65, 0.35 + tStart * 0.4);
+      let dx = extrude[o + 3] - extrude[o];
+      let dy = extrude[o + 4] - extrude[o + 1];
+      let dz = extrude[o + 5] - extrude[o + 2];
+      const len = Math.hypot(dx, dy, dz);
+      let shade = 0.5;
+      if (len > 0) {
+        dx /= len; dy /= len; dz /= len;
+        shade = (dx * lightX + dy * lightY + dz * lightZ + 1) / 2;
+      }
+      color.setHSL(0.62, 0.55, 0.3 + shade * 0.4);
+      // One flat color per segment (not interpolated along its length), matching PrettyGCode.
       colors[o] = color.r; colors[o + 1] = color.g; colors[o + 2] = color.b;
-
-      const tEnd = (extrude[o + 4] - minHeight) / heightRange;
-      color.setHSL(0.62, 0.65, 0.35 + tEnd * 0.4);
       colors[o + 3] = color.r; colors[o + 4] = color.g; colors[o + 5] = color.b;
     }
 

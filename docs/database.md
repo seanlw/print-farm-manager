@@ -103,22 +103,32 @@ A G-code file attached to a specific Part + printer model combination.
 
 ```sql
 CREATE TABLE IF NOT EXISTS gcodes (
-  id               INTEGER PRIMARY KEY AUTOINCREMENT,
-  part_id          INTEGER NOT NULL REFERENCES parts(id),
-  printer_model    TEXT NOT NULL,      -- mk4s | core1 | core1l | xl
-  filename         TEXT NOT NULL,
-  filepath         TEXT NOT NULL,      -- absolute path under server/gcode/
-  parts_per_plate  INTEGER NOT NULL,
-  est_print_secs   INTEGER,            -- nullable; per-plate print time in seconds
-  material_grams   REAL,              -- nullable; per-plate filament weight in grams
-  ams_slot         INTEGER,            -- Bambu only: -1=external spool, 0–N=AMS slot, NULL=non-Bambu
-  created_at       INTEGER NOT NULL
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  part_id              INTEGER NOT NULL REFERENCES parts(id),
+  printer_model        TEXT NOT NULL,      -- mk4s | core1 | core1l | xl
+  filename             TEXT NOT NULL,
+  filepath             TEXT NOT NULL,      -- absolute path under server/gcode/
+  parts_per_plate      INTEGER NOT NULL,
+  est_print_secs       INTEGER,            -- nullable; per-plate print time in seconds
+  material_grams       REAL,               -- nullable; per-plate filament weight in grams
+  ams_slot             INTEGER,            -- Bambu only: -1=external spool, 0-N=AMS slot, NULL=non-Bambu
+  allowed_groups       TEXT,               -- nullable; JSON array of printer group names, e.g. '["MK4S Farm"]'; NULL = all groups
+  required_material    TEXT,               -- nullable; must match the loaded filament's type to dispatch
+  required_color       TEXT,               -- nullable; must match the loaded filament's color to dispatch
+  file_size            INTEGER,            -- nullable; on-disk byte size, lazily backfilled (see below)
+  filament_used_grams  REAL,               -- nullable; parsed from the file's own slicer metadata (see below)
+  filament_used_mm     REAL,               -- nullable; parsed from the file's own slicer metadata (see below)
+  created_at           INTEGER NOT NULL
 );
 ```
 
 **Uniqueness on `(part_id, printer_model)`** is enforced at the application layer, not as a DB constraint, so the error message shown to the operator is clear and specific.
 
 `est_print_secs` and `material_grams` are **per-plate** values (i.e., covering all parts on one plate, not one part). They are auto-populated from the filename on upload when the Bambu-style naming convention is detected, and can be edited later via `PUT /api/gcodes/:id`. Since each gcode belongs to one `printer_model`, the stats system can break down elapsed time and material used by model across a project's completed jobs.
+
+`file_size` predates a column added by `ALTER TABLE`: existing rows start `NULL` and are lazily backfilled (an `fs.statSync` on the underlying file) the first time they're returned by `GET /api/gcodes`, rather than by a startup migration loop.
+
+`filament_used_grams` and `filament_used_mm` are the real filament usage the slicer itself computed at slice time, parsed directly out of the G-code file's own metadata. For a plain `.gcode`/`.3mf` source this means its `; filament used [g] = N` / `; total filament used [g] = N` comments; for a `.bgcode` source (Prusa's binary format) these comments are never present in the file's executable G-code at all, so they're parsed from its Printer/Print Metadata blocks instead (see `server/gcode-decode.js`'s `extractBgcodeMetadataText`). Two separate triggers populate these columns, both non-destructive (`COALESCE`-guarded, never re-parsed or overwritten once set, the same self-healing shape as `file_size`): the first time a G-code's 3D preview is requested (`GET /api/gcodes/:id/preview`), and whenever an operator clicks "Parse G-code" on a G-code row in the Details panel (`POST /api/gcodes/:id/parse-gcode`), which also opportunistically re-derives `est_print_secs` (from the slicer's own "estimated printing time (normal mode)" line) into the draft input without auto-persisting it. `material_grams` also gets backfilled from the same parse, but only if it was still `NULL`; a value already present (filename-derived or manually edited) always wins. Distinct from `material_grams`: the parsed value is exactly what the slicer measured for that specific file, unaffected by a later manual edit to `material_grams`. Only verified against real PrusaSlicer/OrcaSlicer output; Bambu Studio's native filament-usage key is shaped differently and is not guaranteed to be recognized.
 
 ### jobs
 

@@ -89,7 +89,9 @@ beforeEach(() => {
       allowed_groups    TEXT,
       required_material TEXT,
       required_color    TEXT,
-      file_size         INTEGER
+      file_size         INTEGER,
+      filament_used_grams REAL,
+      filament_used_mm    REAL
     );
     CREATE TABLE jobs (
       id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,10 +154,11 @@ beforeEach(() => {
   db.prepare(`
     INSERT INTO gcodes
       (part_id, printer_model, filename, filepath, parts_per_plate, est_print_secs, created_at,
-       ams_slot, material_grams, allowed_groups, required_material, required_color, file_size)
+       ams_slot, material_grams, allowed_groups, required_material, required_color, file_size,
+       filament_used_grams, filament_used_mm)
     VALUES
       (1, 'x1c', 'part.gcode', 'part_stub.gcode', 4, 3600, ?,
-       2, 45.5, '["Bambu Farm"]', 'PETG', 'Red', 123456)
+       2, 45.5, '["Bambu Farm"]', 'PETG', 'Red', 123456, 45.2, 15230.5)
   `).run(now);
 
   // Two types/colors (not one) so a restore that gets the filament_colors -> filament_types
@@ -209,6 +212,8 @@ describe('Backup export/restore — column round-trip regression', () => {
       required_material: 'PETG',
       required_color: 'Red',
       file_size: 123456,
+      filament_used_grams: 45.2,
+      filament_used_mm: 15230.5,
     });
   });
 
@@ -223,7 +228,7 @@ describe('Backup export/restore — column round-trip regression', () => {
       db.prepare("UPDATE printers SET serial_number = '', loaded_material = NULL, loaded_color = NULL").run();
       db.prepare("UPDATE projects SET required_material = NULL, required_color = NULL").run();
       db.prepare("UPDATE parts SET print_time_seconds = NULL, material_grams = NULL").run();
-      db.prepare("UPDATE gcodes SET ams_slot = NULL, material_grams = NULL, allowed_groups = NULL, required_material = NULL, required_color = NULL, file_size = NULL").run();
+      db.prepare("UPDATE gcodes SET ams_slot = NULL, material_grams = NULL, allowed_groups = NULL, required_material = NULL, required_color = NULL, file_size = NULL, filament_used_grams = NULL, filament_used_mm = NULL").run();
 
       const restoreRes = await request(app)
         .post('/api/backup/restore')
@@ -252,6 +257,8 @@ describe('Backup export/restore — column round-trip regression', () => {
       expect(gcode.required_material).toBe('PETG');
       expect(gcode.required_color).toBe('Red');
       expect(gcode.file_size).toBe(123456);
+      expect(gcode.filament_used_grams).toBe(45.2);
+      expect(gcode.filament_used_mm).toBe(15230.5);
     } finally {
       fs.unlinkSync(backupFile);
     }

@@ -14,7 +14,7 @@
 | `server/poller.js` | Printer status polling loop |
 | `server/scheduler.js` | Job dispatch engine — listens to poller events, dispatches prints |
 | `server/notifications.js` | In-memory alert store for recoverable server errors |
-| `server/gcode-decode.js` | Normalizes `.bgcode`/`.3mf` to plain-text G-code (used by `GET /api/gcodes/:id/preview`) |
+| `server/gcode-decode.js` | Normalizes `.bgcode`/`.3mf` to plain-text G-code, extracts bgcode metadata blocks, and parses slicer filament-usage stats (used by `GET /api/gcodes/:id/preview`) |
 | `server/routes/` | One file per resource (printers, projects, parts, gcodes, jobs, backup) |
 | `server/data/farm.db` | SQLite database file (auto-created, gitignored) |
 | `server/gcode/` | G-code file storage directory (auto-created, gitignored) |

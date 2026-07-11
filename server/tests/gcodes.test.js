@@ -44,6 +44,8 @@ beforeAll(() => {
       required_material TEXT,
       required_color TEXT,
       file_size INTEGER,
+      filament_used_grams REAL,
+      filament_used_mm REAL,
       created_at INTEGER NOT NULL
     );
     CREATE TABLE printers (
@@ -542,6 +544,35 @@ function minimalBgcodeFile(gcodeText) {
   return Buffer.concat([header, blockHeader, params, payload]);
 }
 
+// Same as minimalBgcodeFile, plus an uncompressed Print Metadata block (block type 4) carrying
+// the given INI text -- this is where a real bgcode file's filament-usage stats actually live
+// (see server/tests/gcode-decode.test.js's extractBgcodeMetadataText tests), not inside the
+// GCode block's own text.
+function bgcodeFileWithMetadata(gcodeText, metadataText) {
+  const header = Buffer.alloc(10);
+  header.write('GCDE', 0, 'ascii');
+  header.writeUInt32LE(1, 4);
+  header.writeUInt16LE(0, 8);
+
+  const gcodePayload = Buffer.from(gcodeText, 'utf8');
+  const gcodeBlockHeader = Buffer.alloc(8);
+  gcodeBlockHeader.writeUInt16LE(1, 0); // block type: GCode
+  gcodeBlockHeader.writeUInt16LE(0, 2); // compression: none
+  gcodeBlockHeader.writeUInt32LE(gcodePayload.length, 4);
+  const gcodeParams = Buffer.alloc(2); // encoding: none
+  const gcodeBlock = Buffer.concat([gcodeBlockHeader, gcodeParams, gcodePayload]);
+
+  const metaPayload = Buffer.from(metadataText, 'utf8');
+  const metaBlockHeader = Buffer.alloc(8);
+  metaBlockHeader.writeUInt16LE(4, 0); // block type: Print Metadata
+  metaBlockHeader.writeUInt16LE(0, 2); // compression: none
+  metaBlockHeader.writeUInt32LE(metaPayload.length, 4);
+  const metaParams = Buffer.alloc(2); // encoding: INI
+  const metaBlock = Buffer.concat([metaBlockHeader, metaParams, metaPayload]);
+
+  return Buffer.concat([header, gcodeBlock, metaBlock]);
+}
+
 describe('GET /api/gcodes/:id/preview', () => {
   const written = [];
 
@@ -645,5 +676,171 @@ describe('GET /api/gcodes/:id/preview', () => {
     const res = await request(app).get(`/api/gcodes/${id}/preview`);
     expect(res.status).toBe(422);
     expect(res.body.code).toBe('DECODE_FAILED');
+  });
+
+  // ── Lazy filament-usage backfill (mirrors the file_size backfill's three-test shape) ──────
+  test('parses and persists filament-usage from a .bgcode file\'s metadata block, backfilling material_grams when null', async () => {
+    const filename = `preview_filament_${Date.now()}.bgcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    const metadataText = 'filament used [mm]=252.22\ntotal filament used [g]=0.75\n';
+    fs.writeFileSync(fullPath, bgcodeFileWithMetadata('G1 X1 Y1\n', metadataText));
+    written.push(fullPath);
+    const id = insertGcode(filename, filename); // material_grams left null by insertGcode
+
+    const res = await request(app).get(`/api/gcodes/${id}/preview`);
+    expect(res.status).toBe(200);
+    expect(res.headers['x-filament-used-grams']).toBe('0.75');
+    expect(res.headers['x-filament-used-mm']).toBe('252.22');
+
+    const row = db.prepare('SELECT filament_used_grams, filament_used_mm, material_grams FROM gcodes WHERE id = ?').get(id);
+    expect(row.filament_used_grams).toBe(0.75);
+    expect(row.filament_used_mm).toBe(252.22);
+    expect(row.material_grams).toBe(0.75); // backfilled, since it started null
+  });
+
+  test('never overwrites an already-set material_grams, even when filament metadata is found', async () => {
+    const filename = `preview_filament_keep_${Date.now()}.bgcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    fs.writeFileSync(fullPath, bgcodeFileWithMetadata('G1 X1 Y1\n', 'total filament used [g]=0.75\n'));
+    written.push(fullPath);
+    const now = Date.now();
+    const id = db.prepare(`
+      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, material_grams, created_at)
+      VALUES (1, 'mk4s', ?, ?, 1, 999, ?)
+    `).run(filename, filename, now).lastInsertRowid;
+
+    const res = await request(app).get(`/api/gcodes/${id}/preview`);
+    expect(res.status).toBe(200);
+    expect(res.headers['x-filament-used-grams']).toBe('0.75'); // still reported
+
+    const row = db.prepare('SELECT material_grams FROM gcodes WHERE id = ?').get(id);
+    expect(row.material_grams).toBe(999); // untouched
+  });
+
+  test('never re-parses or overwrites already-set filament_used_grams/mm on a later request', async () => {
+    const filename = `preview_filament_stale_${Date.now()}.bgcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    // Real metadata says 0.75g/252.22mm, but the row already has different values stored --
+    // proves the route trusts the already-set columns rather than re-parsing every time.
+    fs.writeFileSync(fullPath, bgcodeFileWithMetadata('G1 X1 Y1\n', 'total filament used [g]=0.75\nfilament used [mm]=252.22\n'));
+    written.push(fullPath);
+    const now = Date.now();
+    const id = db.prepare(`
+      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, filament_used_grams, filament_used_mm, created_at)
+      VALUES (1, 'mk4s', ?, ?, 1, 1.23, 456, ?)
+    `).run(filename, filename, now).lastInsertRowid;
+
+    const res = await request(app).get(`/api/gcodes/${id}/preview`);
+    expect(res.status).toBe(200);
+    expect(res.headers['x-filament-used-grams']).toBe('1.23');
+    expect(res.headers['x-filament-used-mm']).toBe('456');
+
+    const row = db.prepare('SELECT filament_used_grams, filament_used_mm FROM gcodes WHERE id = ?').get(id);
+    expect(row.filament_used_grams).toBe(1.23);
+    expect(row.filament_used_mm).toBe(456);
+  });
+
+  test('omits the filament headers and leaves the columns null when there is no recognizable slicer metadata', async () => {
+    const filename = `preview_no_filament_${Date.now()}.gcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    fs.writeFileSync(fullPath, 'G1 X10 Y20\n');
+    written.push(fullPath);
+    const id = insertGcode(filename, filename);
+
+    const res = await request(app).get(`/api/gcodes/${id}/preview`);
+    expect(res.status).toBe(200);
+    expect(res.headers['x-filament-used-grams']).toBeUndefined();
+    expect(res.headers['x-filament-used-mm']).toBeUndefined();
+
+    const row = db.prepare('SELECT filament_used_grams, filament_used_mm FROM gcodes WHERE id = ?').get(id);
+    expect(row.filament_used_grams).toBeNull();
+    expect(row.filament_used_mm).toBeNull();
+  });
+});
+
+describe('POST /api/gcodes/:id/parse-gcode', () => {
+  const written = [];
+
+  afterEach(() => {
+    while (written.length) {
+      const p = written.pop();
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
+  });
+
+  test('returns 404 for unknown id', async () => {
+    const res = await request(app).post('/api/gcodes/99999/parse-gcode');
+    expect(res.status).toBe(404);
+  });
+
+  test('returns 404 when the file is missing from disk', async () => {
+    const filename = `parse_missing_${Date.now()}.gcode`;
+    const id = insertGcode(filename, filename);
+    const res = await request(app).post(`/api/gcodes/${id}/parse-gcode`);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/missing from disk/i);
+  });
+
+  test('returns 422 with a typed error code when the file fails to decode', async () => {
+    const filename = `parse_bad_${Date.now()}.bgcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    fs.writeFileSync(fullPath, 'not a real bgcode file');
+    written.push(fullPath);
+    const id = insertGcode(filename, filename);
+
+    const res = await request(app).post(`/api/gcodes/${id}/parse-gcode`);
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('INVALID_BGCODE');
+  });
+
+  test('parses print time and filament weight from real slicer metadata, and persists the filament columns', async () => {
+    const filename = `parse_ok_${Date.now()}.bgcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    const metadataText = 'total filament used [g]=0.75\nfilament used [mm]=252.22\nestimated printing time (normal mode)=3m 41s\n';
+    fs.writeFileSync(fullPath, bgcodeFileWithMetadata('G1 X1 Y1\n', metadataText));
+    written.push(fullPath);
+    const id = insertGcode(filename, filename);
+
+    const res = await request(app).post(`/api/gcodes/${id}/parse-gcode`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ filament_used_grams: 0.75, filament_used_mm: 252.22, est_print_secs: 221 });
+
+    const row = db.prepare('SELECT filament_used_grams, filament_used_mm FROM gcodes WHERE id = ?').get(id);
+    expect(row.filament_used_grams).toBe(0.75);
+    expect(row.filament_used_mm).toBe(252.22);
+  });
+
+  test('does not persist over an already-set filament_used_grams/mm, but still reports the freshly parsed values', async () => {
+    const filename = `parse_stale_${Date.now()}.bgcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    fs.writeFileSync(fullPath, bgcodeFileWithMetadata('G1 X1 Y1\n', 'total filament used [g]=0.75\nfilament used [mm]=252.22\n'));
+    written.push(fullPath);
+    const now = Date.now();
+    const id = db.prepare(`
+      INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, filament_used_grams, filament_used_mm, created_at)
+      VALUES (1, 'mk4s', ?, ?, 1, 1.23, 456, ?)
+    `).run(filename, filename, now).lastInsertRowid;
+
+    const res = await request(app).post(`/api/gcodes/${id}/parse-gcode`);
+    expect(res.status).toBe(200);
+    // Response reflects what's actually in the file, not the stale stored value.
+    expect(res.body).toEqual({ filament_used_grams: 0.75, filament_used_mm: 252.22, est_print_secs: null });
+
+    // But the stored columns are untouched -- COALESCE never overwrites an already-set value.
+    const row = db.prepare('SELECT filament_used_grams, filament_used_mm FROM gcodes WHERE id = ?').get(id);
+    expect(row.filament_used_grams).toBe(1.23);
+    expect(row.filament_used_mm).toBe(456);
+  });
+
+  test('returns all-null fields (not an error) when there is no recognizable slicer metadata', async () => {
+    const filename = `parse_none_${Date.now()}.gcode`;
+    const fullPath = path.join(GCODE_DIR, filename);
+    fs.writeFileSync(fullPath, 'G1 X10 Y20\n');
+    written.push(fullPath);
+    const id = insertGcode(filename, filename);
+
+    const res = await request(app).post(`/api/gcodes/${id}/parse-gcode`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ filament_used_grams: null, filament_used_mm: null, est_print_secs: null });
   });
 });

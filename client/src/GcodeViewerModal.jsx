@@ -15,6 +15,7 @@ export default function GcodeViewerModal({ gcode, partName, onClose }) {
   const [status, setStatus] = useState('loading'); // loading | error | ready | blocked
   const [error, setError] = useState(null);
   const [proceedAnyway, setProceedAnyway] = useState(false);
+  const [filamentUsed, setFilamentUsed] = useState(null); // { grams, mm } | null
   // This component has no `key` tied to gcode.id, so it doesn't remount when the underlying
   // G-code changes (e.g. deleted and re-uploaded for the same part while the viewer stays
   // open) — without this, a "Try anyway" decision made for one large file would silently carry
@@ -51,12 +52,21 @@ export default function GcodeViewerModal({ gcode, partName, onClose }) {
 
     setStatus('loading');
     setError(null);
+    setFilamentUsed(null);
 
     fetch(`/api/gcodes/${gcode.id}/preview`)
       .then(async (res) => {
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           throw new Error(body.error || `Failed to load G-code (${res.status})`);
+        }
+        const grams = res.headers.get('X-Filament-Used-Grams');
+        const mm = res.headers.get('X-Filament-Used-Mm');
+        if (grams != null || mm != null) {
+          setFilamentUsed({
+            grams: grams != null ? parseFloat(grams) : null,
+            mm: mm != null ? parseFloat(mm) : null,
+          });
         }
         return res.text();
       })
@@ -145,7 +155,15 @@ export default function GcodeViewerModal({ gcode, partName, onClose }) {
         onClick={e => e.stopPropagation()}
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: '#e2e8f0' }}>3D Preview — {partName} ({gcode.filename})</div>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#e2e8f0' }}>3D Preview — {partName} ({gcode.filename})</div>
+            {filamentUsed && (filamentUsed.grams != null || filamentUsed.mm != null) && (
+              <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>
+                Filament used: {filamentUsed.grams != null ? `${filamentUsed.grams.toFixed(2)} g` : 'unknown'}
+                {filamentUsed.mm != null ? ` (${filamentUsed.mm.toFixed(0)} mm)` : ''}
+              </div>
+            )}
+          </div>
           <button
             onClick={onClose}
             aria-label="Close"

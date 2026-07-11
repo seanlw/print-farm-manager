@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { decodeBgcode, decode3mf, GcodeDecodeError } = require('../gcode-decode');
+const { decodeBgcode, decode3mf, extractBgcodeMetadataText, GcodeDecodeError, parseFilamentUsage, parsePrintTime } = require('../gcode-decode');
 const router = express.Router();
 
 const GCODE_DIR = path.join(__dirname, '..', 'gcode');
@@ -85,6 +85,17 @@ function normalizePrintTime(raw) {
   return found ? total : null;
 }
 
+// Returns the text parseFilamentUsage()/parsePrintTime() should scan for an already-read file
+// `buffer`, dispatching by extension the same way GET /:id/preview does: a .bgcode's
+// Printer/Print Metadata blocks (never its GCode block text -- see extractBgcodeMetadataText),
+// a .3mf's extracted plate G-code, or a plain .gcode file's own text.
+async function filamentSourceTextFor(buffer, filename) {
+  const ext = path.extname(filename).toLowerCase();
+  if (ext === '.bgcode') return extractBgcodeMetadataText(buffer);
+  if (ext === '.3mf') return decode3mf(buffer);
+  return buffer.toString('utf8');
+}
+
 // Accepts: bare number (grams), "45g", "45.5 grams", "1.2kg", "1.2 kilograms"
 function normalizeMaterialGrams(raw) {
   if (!raw && raw !== 0) return null;
@@ -146,6 +157,45 @@ module.exports = (db, scheduler = null) => {
       return res.json({ parse_failed: true, material_grams });
     }
     res.json({ parse_failed: false, ...parsed, material_grams });
+  });
+
+  // POST /api/gcodes/:id/parse-gcode: re-derive print time and filament weight from the
+  // already-uploaded file's own slicer metadata (real values, not a filename guess). Always
+  // decodes fresh on every call and returns what it found, letting the operator review/edit the
+  // draft inputs before choosing to Save -- distinct from filament_used_grams/filament_used_mm,
+  // which this also opportunistically persists (COALESCE, non-destructive) as a side effect so
+  // the 3D Viewer and other consumers benefit even if the operator doesn't hit Save here.
+  router.post('/:id/parse-gcode', async (req, res) => {
+    const gcode = db.prepare('SELECT * FROM gcodes WHERE id = ?').get(req.params.id);
+    if (!gcode) return res.status(404).json({ error: 'G-code not found' });
+
+    const gcodeFilename = gcode.filepath.split(/[\\/]/).pop();
+    const fullPath = path.join(GCODE_DIR, gcodeFilename);
+    if (!fs.existsSync(fullPath)) {
+      return res.status(404).json({ error: 'G-code file is missing from disk' });
+    }
+
+    try {
+      const buffer = fs.readFileSync(fullPath);
+      const sourceText = await filamentSourceTextFor(buffer, gcode.filename);
+      const parsed = parseFilamentUsage(sourceText);
+      const est_print_secs = parsePrintTime(sourceText);
+
+      db.prepare(`
+        UPDATE gcodes
+        SET filament_used_grams = COALESCE(filament_used_grams, ?),
+            filament_used_mm    = COALESCE(filament_used_mm, ?)
+        WHERE id = ?
+      `).run(parsed.grams, parsed.mm, req.params.id);
+
+      res.json({ filament_used_grams: parsed.grams, filament_used_mm: parsed.mm, est_print_secs });
+    } catch (err) {
+      if (err instanceof GcodeDecodeError) {
+        return res.status(422).json({ error: err.message, code: err.code });
+      }
+      console.error(`[gcodes] parse-gcode failed for gcode ${req.params.id}:`, err);
+      return res.status(422).json({ error: 'Failed to decode this G-code file, it may be corrupt.', code: 'DECODE_FAILED' });
+    }
   });
 
   // POST /api/gcodes/upload — upload G-code file and create DB record
@@ -263,7 +313,9 @@ module.exports = (db, scheduler = null) => {
 
   // GET /api/gcodes/:id/preview — plain-text G-code for the 3D viewer, normalized
   // regardless of source format (.gcode passes through, .bgcode/.3mf are decoded server-side
-  // so the client only ever has to deal with plain G-code text).
+  // so the client only ever has to deal with plain G-code text). Also lazily parses and
+  // persists filament-usage stats from the source file's slicer metadata, reported via the
+  // X-Filament-Used-Grams / X-Filament-Used-Mm response headers (present only when found).
   router.get('/:id/preview', async (req, res) => {
     const gcode = db.prepare('SELECT * FROM gcodes WHERE id = ?').get(req.params.id);
     if (!gcode) return res.status(404).json({ error: 'G-code not found' });
@@ -285,7 +337,37 @@ module.exports = (db, scheduler = null) => {
       } else {
         text = buffer.toString('utf8');
       }
-      res.set('Content-Type', 'text/plain').send(text);
+
+      // Lazily parse+persist filament-usage stats the first time this row's G-code is
+      // decoded -- mirrors the GET / file_size backfill, hooked here instead since this route
+      // is the only place a full decode already happens on every request; parsing the
+      // resulting text for slicer comments is free by comparison. A .bgcode file never carries
+      // these stats in its GCode block's own text (verified against a real PrusaSlicer
+      // fixture) -- they live in separate Printer/Print Metadata blocks instead, so bgcode
+      // sources are parsed from extractBgcodeMetadataText's output, not `text`. COALESCE means
+      // an already-set column (from a prior parse, or a restored backup) is never overwritten
+      // -- including material_grams, which only gets the parsed grams value when it was NULL to
+      // begin with, so a manual edit always wins.
+      let filamentUsedGrams = gcode.filament_used_grams;
+      let filamentUsedMm = gcode.filament_used_mm;
+      if (filamentUsedGrams == null || filamentUsedMm == null) {
+        const filamentSourceText = ext === '.bgcode' ? extractBgcodeMetadataText(buffer) : text;
+        const parsed = parseFilamentUsage(filamentSourceText);
+        db.prepare(`
+          UPDATE gcodes
+          SET filament_used_grams = COALESCE(filament_used_grams, ?),
+              filament_used_mm    = COALESCE(filament_used_mm, ?),
+              material_grams      = COALESCE(material_grams, ?)
+          WHERE id = ?
+        `).run(parsed.grams, parsed.mm, parsed.grams, req.params.id);
+        filamentUsedGrams = filamentUsedGrams ?? parsed.grams;
+        filamentUsedMm = filamentUsedMm ?? parsed.mm;
+      }
+
+      res.set('Content-Type', 'text/plain');
+      if (filamentUsedGrams != null) res.set('X-Filament-Used-Grams', String(filamentUsedGrams));
+      if (filamentUsedMm != null) res.set('X-Filament-Used-Mm', String(filamentUsedMm));
+      res.send(text);
     } catch (err) {
       if (err instanceof GcodeDecodeError) {
         return res.status(422).json({ error: err.message, code: err.code });

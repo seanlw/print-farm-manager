@@ -4,7 +4,7 @@ const zlib = require('zlib');
 const pako = require('pako');
 const JSZip = require('jszip');
 const { HeatshrinkDecoder } = require('heatshrink-ts');
-const { decodeBgcode, decode3mf, GcodeDecodeError } = require('../gcode-decode');
+const { decodeBgcode, decode3mf, extractBgcodeMetadataText, GcodeDecodeError, parseFilamentUsage, parsePrintTime } = require('../gcode-decode');
 
 // ── bgcode fixture builder ──────────────────────────────────────────────────
 // Mirrors https://github.com/prusa3d/libbgcode/blob/main/doc/specifications.md:
@@ -12,6 +12,8 @@ const { decodeBgcode, decode3mf, GcodeDecodeError } = require('../gcode-decode')
 // blocks (type, compression, uncompressed size, [compressed size], params, data).
 // Fixtures here use checksum type 0 (none) throughout — no per-block checksum trailer.
 const BLOCK_TYPE_GCODE = 1;
+const BLOCK_TYPE_PRINTER_METADATA = 3;
+const BLOCK_TYPE_PRINT_METADATA = 4;
 const BLOCK_TYPE_THUMBNAIL = 5;
 const COMPRESSION_NONE = 0;
 const COMPRESSION_DEFLATE = 1;
@@ -35,6 +37,19 @@ function gcodeBlock(payload, { compression = COMPRESSION_NONE, encoding = 0, unc
   const params = Buffer.alloc(2);
   params.writeUInt16LE(encoding, 0);
 
+  return Buffer.concat([header, params, payload]);
+}
+
+// Printer Metadata (3) / Print Metadata (4) blocks carry INI-style key=value text and, like
+// GCode blocks, a 2-byte encoding parameter (0 = INI, the only value this parser cares about).
+function metadataBlock(blockType, payload, { compression = COMPRESSION_NONE, uncompressedSize } = {}) {
+  const header = Buffer.alloc(compression === COMPRESSION_NONE ? 8 : 12);
+  header.writeUInt16LE(blockType, 0);
+  header.writeUInt16LE(compression, 2);
+  header.writeUInt32LE(uncompressedSize ?? payload.length, 4);
+  if (compression !== COMPRESSION_NONE) header.writeUInt32LE(payload.length, 8);
+
+  const params = Buffer.alloc(2); // encoding: INI
   return Buffer.concat([header, params, payload]);
 }
 
@@ -75,6 +90,17 @@ describe('decodeBgcode', () => {
   test('decodes a Deflate-compressed GCode block', () => {
     const gcode = Buffer.from('G1 X10 Y20 Z5 F1200\n', 'utf8');
     const compressed = Buffer.from(pako.deflateRaw(gcode));
+    const file = bgcodeFile(gcodeBlock(compressed, { compression: COMPRESSION_DEFLATE, uncompressedSize: gcode.length }));
+    expect(decodeBgcode(file)).toBe('G1 X10 Y20 Z5 F1200\n');
+  });
+
+  test('decodes a zlib-wrapped (not raw) Deflate-compressed GCode block', () => {
+    // Real bgcode files mix raw and zlib-wrapped Deflate under the same compression code across
+    // different block types (see extractBgcodeMetadataText's tests below, which caught this
+    // against a real PrusaSlicer fixture) -- this proves the same auto-detection also works for
+    // a GCode block, not just metadata blocks, since both go through the shared decompressBlock.
+    const gcode = Buffer.from('G1 X10 Y20 Z5 F1200\n', 'utf8');
+    const compressed = zlib.deflateSync(gcode); // zlib-wrapped, unlike pako.deflateRaw above
     const file = bgcodeFile(gcodeBlock(compressed, { compression: COMPRESSION_DEFLATE, uncompressedSize: gcode.length }));
     expect(decodeBgcode(file)).toBe('G1 X10 Y20 Z5 F1200\n');
   });
@@ -276,8 +302,9 @@ describe('decodeBgcode against a real PrusaSlicer-generated file', () => {
   // known-correct reference decode of the same file (mini_cube_ps2.8.1_ref.gcode).
   //
   // Comparing full text isn't meaningful here — the reference file's header comments are
-  // reconstructed from metadata blocks this decoder deliberately doesn't read (irrelevant to
-  // a 3D viewer) — so this compares every actual G0-G3 move line instead, which must match
+  // reconstructed from Printer/Print Metadata blocks that decodeBgcode deliberately doesn't
+  // read (irrelevant to a 3D viewer; see extractBgcodeMetadataText below for the function that
+  // does read them) — so this compares every actual G0-G3 move line instead, which must match
   // exactly for the viewer to render the real toolpath correctly.
   test('every G0-G3 move line matches the official reference decode exactly', () => {
     const bgcode = fs.readFileSync(path.join(__dirname, 'fixtures/mini_cube_ps2.8.1.bgcode'));
@@ -291,5 +318,153 @@ describe('decodeBgcode against a real PrusaSlicer-generated file', () => {
     expect(decodedMoves.length).toBe(expectedMoves.length);
     expect(decodedMoves.length).toBeGreaterThan(0);
     expect(decodedMoves).toEqual(expectedMoves);
+  });
+});
+
+describe('extractBgcodeMetadataText', () => {
+  test('extracts an uncompressed Printer Metadata block as plain text', () => {
+    const meta = Buffer.from('printer_model=MK4S\nfilament used [g]=0.75\n', 'utf8');
+    const file = bgcodeFile(metadataBlock(BLOCK_TYPE_PRINTER_METADATA, meta));
+    expect(extractBgcodeMetadataText(file)).toBe('printer_model=MK4S\nfilament used [g]=0.75\n\n');
+  });
+
+  test('extracts a zlib-wrapped Deflate-compressed Print Metadata block', () => {
+    // This repo's own real fixture (mini_cube_ps2.8.1.bgcode) uses zlib-wrapped Deflate for
+    // exactly this block type -- discovered by inspecting it directly, since decodeBgcode's
+    // Deflate handling had only ever been exercised (by the existing "Deflate-compressed GCode
+    // block" test above) against raw/headerless Deflate. This proves the fix decodes it, not
+    // just that it fails gracefully.
+    const meta = Buffer.from('total filament used [g]=0.75\n', 'utf8');
+    const compressed = zlib.deflateSync(meta);
+    const file = bgcodeFile(metadataBlock(BLOCK_TYPE_PRINT_METADATA, compressed, {
+      compression: COMPRESSION_DEFLATE,
+      uncompressedSize: meta.length,
+    }));
+    expect(extractBgcodeMetadataText(file)).toBe('total filament used [g]=0.75\n\n');
+  });
+
+  test('concatenates Printer and Print Metadata blocks, in file order', () => {
+    const printer = Buffer.from('printer_model=MK4S\n', 'utf8');
+    const print = Buffer.from('total filament used [g]=0.75\n', 'utf8');
+    const file = bgcodeFile(
+      metadataBlock(BLOCK_TYPE_PRINTER_METADATA, printer),
+      metadataBlock(BLOCK_TYPE_PRINT_METADATA, print)
+    );
+    expect(extractBgcodeMetadataText(file)).toBe('printer_model=MK4S\n\ntotal filament used [g]=0.75\n\n');
+  });
+
+  test('excludes GCode and Thumbnail blocks', () => {
+    const gcode = Buffer.from('G1 X1 Y1\n', 'utf8');
+    const thumb = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const file = bgcodeFile(gcodeBlock(gcode), thumbnailBlock(thumb));
+    expect(extractBgcodeMetadataText(file)).toBe('');
+  });
+
+  test('returns empty text (not an error) for a bgcode file with no metadata blocks at all', () => {
+    const gcode = Buffer.from('G1 X1 Y1\n', 'utf8');
+    const file = bgcodeFile(gcodeBlock(gcode));
+    expect(extractBgcodeMetadataText(file)).toBe('');
+  });
+
+  test('extracts real filament-usage data from this repo\'s real PrusaSlicer-generated fixture', () => {
+    const bgcode = fs.readFileSync(path.join(__dirname, 'fixtures/mini_cube_ps2.8.1.bgcode'));
+    const text = extractBgcodeMetadataText(bgcode);
+    expect(text).toContain('total filament used [g]=0.75');
+    expect(text).toContain('filament used [mm]=252.22');
+  });
+});
+
+describe('parseFilamentUsage', () => {
+  test('parses a plain .gcode-style comment with a single value', () => {
+    const text = '; filament used [g] = 12.34\n; filament used [mm] = 4567.8\n';
+    expect(parseFilamentUsage(text)).toEqual({ grams: 12.34, mm: 4567.8 });
+  });
+
+  test('parses a bgcode-metadata-style bare key=value line (no leading ";", no spaces)', () => {
+    const text = 'filament used [g]=0.75\nfilament used [mm]=252.22\n';
+    expect(parseFilamentUsage(text)).toEqual({ grams: 0.75, mm: 252.22 });
+  });
+
+  test('prefers the "total filament used" line over a differing per-tool line', () => {
+    const text = [
+      '; filament used [g] = 3.70, 2.36',
+      '; total filament used [g] = 6.06',
+    ].join('\n');
+    expect(parseFilamentUsage(text).grams).toBe(6.06);
+  });
+
+  test('falls back to summing a comma-separated per-tool line when no total line exists', () => {
+    const text = '; filament used [g] = 3.70, 2.36\n; filament used [mm] = 1234.5, 789.0\n';
+    expect(parseFilamentUsage(text)).toEqual({ grams: 6.06, mm: 2023.5 });
+  });
+
+  test('ignores the wipe-tower total, which is a different line, not the print total', () => {
+    // Both lines appear side by side in real slicer output (see the real fixture above) --
+    // "for wipe tower" must not be mistaken for the real total.
+    const text = [
+      '; filament used [g] = 0.75',
+      '; total filament used for wipe tower [g] = 0.00',
+    ].join('\n');
+    expect(parseFilamentUsage(text).grams).toBe(0.75);
+  });
+
+  test('prefers the last occurrence when both a header and footer total line are present', () => {
+    const text = [
+      '; total filament used [g] = 5.00', // header estimate, superseded
+      '; total filament used [g] = 5.42', // footer, final and authoritative
+    ].join('\n');
+    expect(parseFilamentUsage(text).grams).toBe(5.42);
+  });
+
+  test('tolerates CRLF line endings', () => {
+    const text = '; total filament used [g] = 9.87\r\n; total filament used [mm] = 3210.0\r\n';
+    expect(parseFilamentUsage(text)).toEqual({ grams: 9.87, mm: 3210 });
+  });
+
+  test('returns null for both fields when no recognizable comment is present', () => {
+    expect(parseFilamentUsage('G1 X10 Y20\nG1 X20 Y30\n')).toEqual({ grams: null, mm: null });
+  });
+
+  test('live regression: real PrusaSlicer bgcode metadata decodes to the known fixture values', () => {
+    const bgcode = fs.readFileSync(path.join(__dirname, 'fixtures/mini_cube_ps2.8.1.bgcode'));
+    const metaText = extractBgcodeMetadataText(bgcode);
+    expect(parseFilamentUsage(metaText)).toEqual({ grams: 0.75, mm: 252.22 });
+  });
+});
+
+describe('parsePrintTime', () => {
+  test('parses a plain .gcode-style comment ("Xm Ys")', () => {
+    expect(parsePrintTime('; estimated printing time (normal mode) = 3m 41s\n')).toBe(221);
+  });
+
+  test('parses a bgcode-metadata-style bare key=value line', () => {
+    expect(parsePrintTime('estimated printing time (normal mode)=3m 41s\n')).toBe(221);
+  });
+
+  test('parses hours, minutes, and seconds together', () => {
+    expect(parsePrintTime('; estimated printing time (normal mode) = 2h 30m 10s\n')).toBe(2 * 3600 + 30 * 60 + 10);
+  });
+
+  test('ignores "silent mode", which is a distinct, typically slower estimate', () => {
+    const text = '; estimated printing time (silent mode) = 9h 0m 0s\n; estimated printing time (normal mode) = 3m 41s\n';
+    expect(parsePrintTime(text)).toBe(221);
+  });
+
+  test('prefers the last occurrence when both a header and footer estimate are present', () => {
+    const text = [
+      '; estimated printing time (normal mode) = 5m 0s',
+      '; estimated printing time (normal mode) = 3m 41s',
+    ].join('\n');
+    expect(parsePrintTime(text)).toBe(221);
+  });
+
+  test('returns null when no recognizable line is present', () => {
+    expect(parsePrintTime('G1 X10 Y20\n')).toBeNull();
+  });
+
+  test('live regression: real PrusaSlicer bgcode metadata decodes to the known fixture value', () => {
+    const bgcode = fs.readFileSync(path.join(__dirname, 'fixtures/mini_cube_ps2.8.1.bgcode'));
+    const metaText = extractBgcodeMetadataText(bgcode);
+    expect(parsePrintTime(metaText)).toBe(221);
   });
 });

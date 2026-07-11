@@ -4,6 +4,9 @@ const JSZip = require('jszip');
 
 // bgcode block types (see https://github.com/prusa3d/libbgcode/blob/main/doc/specifications.md)
 const BLOCK_TYPE_GCODE = 1;
+const BLOCK_TYPE_PRINTER_METADATA = 3; // printer model, nozzle diameter, etc. -- INI key=value text
+const BLOCK_TYPE_PRINT_METADATA = 4;   // this print job's own stats (time, filament used) -- INI key=value text
+const BLOCK_TYPE_THUMBNAIL = 5;
 
 const COMPRESSION_NONE = 0;
 const COMPRESSION_DEFLATE = 1;
@@ -41,9 +44,14 @@ const MEATPACK_TABLE = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '
 // Feeds `payload` through pako's streaming Inflate a chunk at a time (rather than the one-shot
 // `pako.inflateRaw`), so cumulative output can be checked — and decompression aborted — before
 // the rest of a decompression bomb is processed, instead of only finding out how large the
-// result is after it's already been fully inflated into memory.
-function inflateRawCapped(payload, maxBytes) {
-  const inflator = new pako.Inflate({ raw: true });
+// result is after it's already been fully inflated into memory. `raw: true` decodes headerless
+// deflate (RFC 1951); `raw: false` expects a 2-byte zlib wrapper (RFC 1950) around the same
+// deflate stream. Real bgcode files mix both under the same "Deflate" compression code: this
+// repo's own PrusaSlicer-generated test fixture uses zlib-wrapped Deflate for its Print
+// Metadata block despite the format only having one compression code for "Deflate", so the
+// wrapper must be detected per-payload, not assumed from the compression code alone.
+function inflateDeflateCapped(payload, maxBytes) {
+  const inflator = new pako.Inflate({ raw: !isZlibWrapped(payload) });
   const chunks = [];
   let total = 0;
   let exceeded = false;
@@ -67,7 +75,17 @@ function inflateRawCapped(payload, maxBytes) {
   return Buffer.concat(chunks);
 }
 
-// Same idea as inflateRawCapped, but for Heatshrink: feed the compressed payload to the decoder
+// zlib-wrapped deflate (RFC 1950) starts with a 2-byte header whose big-endian value is always
+// a multiple of 31 by construction (a checksum built into the format itself) -- an extremely
+// reliable way to tell it apart from headerless raw deflate, which has no such structure and
+// essentially never coincides with a valid header by chance.
+function isZlibWrapped(payload) {
+  if (payload.length < 2) return false;
+  const header = (payload[0] << 8) | payload[1];
+  return (payload[0] & 0x0f) === 0x08 && header % 31 === 0;
+}
+
+// Same idea as inflateDeflateCapped, but for Heatshrink: feed the compressed payload to the decoder
 // in small pieces and drain+check output after each one, rather than processing the whole
 // payload in a single call (which would fully decompress a bomb before we ever get a chance to
 // look at how much output it produced).
@@ -98,7 +116,7 @@ function decompressBlock(payload, compression) {
       if (payload.length > MAX_DECOMPRESSED_BYTES) throw tooLargeError(MAX_DECOMPRESSED_BYTES);
       return payload;
     case COMPRESSION_DEFLATE:
-      return inflateRawCapped(payload, MAX_DECOMPRESSED_BYTES);
+      return inflateDeflateCapped(payload, MAX_DECOMPRESSED_BYTES);
     case COMPRESSION_HEATSHRINK_11:
     case COMPRESSION_HEATSHRINK_12: {
       const windowBits = compression === COMPRESSION_HEATSHRINK_11 ? 11 : 12;
@@ -259,10 +277,13 @@ function decodeMeatpack(buffer) {
   return chunks.join('');
 }
 
-// Parses a bgcode buffer (see https://github.com/prusa3d/libbgcode/blob/main/doc/specifications.md)
-// and returns the concatenated plain-text G-code from every GCode-type block. Non-GCode blocks
-// (metadata, thumbnails) are skipped.
-function decodeBgcode(buffer) {
+// Walks a bgcode buffer's block sequence (see
+// https://github.com/prusa3d/libbgcode/blob/main/doc/specifications.md) and returns an array of
+// { blockType, compression, gcodeEncoding, payload } entries, still compressed at this point.
+// Shared by decodeBgcode (GCode blocks) and extractBgcodeMetadataText (Printer/Print Metadata
+// blocks) so the header/checksum/param-skip parsing (the fiddly, easy-to-get-wrong part) is
+// written and tested in exactly one place.
+function parseBgcodeBlocks(buffer) {
   if (buffer.length < 10 || buffer.toString('ascii', 0, 4) !== 'GCDE') {
     throw new GcodeDecodeError('INVALID_BGCODE', 'Not a valid bgcode file (missing GCDE magic header)');
   }
@@ -270,8 +291,7 @@ function decodeBgcode(buffer) {
   let offset = 10; // magic(4) + version(4) + checksum type(2)
   const checksumType = buffer.readUInt16LE(8);
   const checksumSize = checksumType === 0 ? 0 : 4;
-
-  let gcodeText = '';
+  const blocks = [];
 
   while (offset < buffer.length) {
     if (offset + 8 > buffer.length) {
@@ -291,7 +311,10 @@ function decodeBgcode(buffer) {
       offset += 4;
     }
 
-    // Block parameters
+    // Block parameters: GCode blocks carry a 2-byte encoding field; Thumbnail blocks carry
+    // format+width+height (6 bytes); every other block type (File/Slicer/Printer/Print
+    // Metadata) carries a 2-byte encoding field too (0 = INI text, per the spec), which this
+    // parser doesn't need to interpret since all of ours use plain INI text.
     let gcodeEncoding = GCODE_ENCODING_NONE;
     if (blockType === BLOCK_TYPE_GCODE) {
       if (offset + 2 > buffer.length) {
@@ -300,9 +323,7 @@ function decodeBgcode(buffer) {
       gcodeEncoding = buffer.readUInt16LE(offset);
       offset += 2;
     } else {
-      // Metadata blocks (encoding, 2 bytes) / Thumbnail blocks (format+width+height, 6 bytes) —
-      // skip their parameter bytes; we don't need their content for this feature.
-      offset += blockType === 5 /* thumbnail */ ? 6 : 2;
+      offset += blockType === BLOCK_TYPE_THUMBNAIL ? 6 : 2;
     }
 
     if (offset + compressedSize > buffer.length) {
@@ -312,23 +333,57 @@ function decodeBgcode(buffer) {
     offset += compressedSize;
     offset += checksumSize;
 
-    if (blockType === BLOCK_TYPE_GCODE) {
-      const decompressed = decompressBlock(payload, compression);
-      if (gcodeEncoding === GCODE_ENCODING_MEATPACK || gcodeEncoding === GCODE_ENCODING_MEATPACK_COMMENTS) {
-        gcodeText += decodeMeatpack(decompressed);
-      } else if (gcodeEncoding === GCODE_ENCODING_NONE) {
-        gcodeText += decompressed.toString('utf8');
-      } else {
-        throw new GcodeDecodeError('UNSUPPORTED_ENCODING', `Unknown bgcode GCode block encoding ${gcodeEncoding}`);
-      }
-      // decompressBlock caps each individual block's own output, but a file with many blocks
-      // that each stay just under that cap could still sum to an unbounded total — check the
-      // running total too.
-      if (gcodeText.length > MAX_DECOMPRESSED_BYTES) throw tooLargeError(MAX_DECOMPRESSED_BYTES);
+    blocks.push({ blockType, compression, gcodeEncoding, payload });
+  }
+
+  return blocks;
+}
+
+// Returns the concatenated plain-text G-code from every GCode-type block. Non-GCode blocks
+// (metadata, thumbnails) are skipped; see extractBgcodeMetadataText for the metadata blocks.
+function decodeBgcode(buffer) {
+  const blocks = parseBgcodeBlocks(buffer);
+  let gcodeText = '';
+
+  for (const { blockType, compression, gcodeEncoding, payload } of blocks) {
+    if (blockType !== BLOCK_TYPE_GCODE) continue;
+
+    const decompressed = decompressBlock(payload, compression);
+    if (gcodeEncoding === GCODE_ENCODING_MEATPACK || gcodeEncoding === GCODE_ENCODING_MEATPACK_COMMENTS) {
+      gcodeText += decodeMeatpack(decompressed);
+    } else if (gcodeEncoding === GCODE_ENCODING_NONE) {
+      gcodeText += decompressed.toString('utf8');
+    } else {
+      throw new GcodeDecodeError('UNSUPPORTED_ENCODING', `Unknown bgcode GCode block encoding ${gcodeEncoding}`);
     }
+    // decompressBlock caps each individual block's own output, but a file with many blocks
+    // that each stay just under that cap could still sum to an unbounded total — check the
+    // running total too.
+    if (gcodeText.length > MAX_DECOMPRESSED_BYTES) throw tooLargeError(MAX_DECOMPRESSED_BYTES);
   }
 
   return gcodeText;
+}
+
+// Returns the concatenated plain-text (INI-style `key=value` lines) content of a bgcode file's
+// Printer Metadata and Print Metadata blocks. This is where PrusaSlicer's binary bgcode format
+// actually stores filament-usage stats ("filament used [g]", "total filament used [g]", print
+// time, etc.), verified empirically against this repo's real mini_cube_ps2.8.1.bgcode fixture,
+// where decodeBgcode's GCode-block text contains zero occurrences of "filament used"; it's
+// entirely in these metadata blocks instead, in a `key=value` shape (no leading `;`, no spaces
+// around `=`) distinct from a plain .gcode file's `; key = value` comment style.
+function extractBgcodeMetadataText(buffer) {
+  const blocks = parseBgcodeBlocks(buffer);
+  let text = '';
+
+  for (const { blockType, compression, payload } of blocks) {
+    if (blockType !== BLOCK_TYPE_PRINTER_METADATA && blockType !== BLOCK_TYPE_PRINT_METADATA) continue;
+
+    text += decompressBlock(payload, compression).toString('utf8') + '\n';
+    if (text.length > MAX_DECOMPRESSED_BYTES) throw tooLargeError(MAX_DECOMPRESSED_BYTES);
+  }
+
+  return text;
 }
 
 // Reads a zip entry's text via JSZip's streaming API instead of `.async('string')`, so
@@ -379,4 +434,73 @@ async function decode3mf(buffer) {
   return readZipEntryTextCapped(zip.files[gcodeEntry], MAX_DECOMPRESSED_BYTES);
 }
 
-module.exports = { decodeBgcode, decode3mf, GcodeDecodeError };
+// Parses slicer-authored filament-usage stats out of already-decoded text. Handles two real
+// shapes: a plain .gcode/.3mf file's `; filament used [g] = N` comments (PrusaSlicer/OrcaSlicer
+// convention, leading `;`, spaced `=`), and a bgcode file's Printer/Print Metadata block INI
+// text (see extractBgcodeMetadataText), which states the same facts as bare `filament used
+// [g]=N` lines with no leading `;` and no spaces. Prefers the LAST-occurring "total filament
+// used" line -- real slicer/bgcode output only ever writes this after every tool/object/wipe-
+// tower's usage has been tallied, making it the authoritative aggregate for multi-tool/
+// multi-color prints -- and falls back to summing a non-"total" "filament used" line's
+// comma-separated per-tool values (also taking the last such occurrence) when no total line
+// exists at all. Returns { grams: null, mm: null }, never throws, when nothing recognizable is
+// present (e.g. hand-written G-code with no slicer metadata) -- this must never break the
+// /preview response or the 3D render path. The separator between the unit bracket and the
+// number is tolerant (=, :, or bare whitespace) to opportunistically catch slicer variants
+// beyond PrusaSlicer's exact format; only verified against real PrusaSlicer/OrcaSlicer/bgcode
+// output, not Bambu Studio's differently-shaped native key.
+function parseFilamentUsage(text) {
+  return { grams: parseFilamentUnit(text, 'g'), mm: parseFilamentUnit(text, 'mm') };
+}
+
+function parseFilamentUnit(text, unit) {
+  const total = lastRegexMatch(text, `^;?\\s*total filament used\\s*\\[${unit}\\]\\s*[:=]?\\s*([\\d.]+)`, 'im');
+  if (total) {
+    const v = parseFloat(total[1]);
+    if (Number.isFinite(v)) return v;
+  }
+  // (?!total\s) excludes the total line itself and lines like
+  // "; total filament used for wipe tower [g] = 0.00" / "total filament used for wipe tower
+  // [g]=0.00" from this fallback.
+  const perTool = lastRegexMatch(text, `^;?\\s*(?!total\\s)filament used\\s*\\[${unit}\\]\\s*[:=]?\\s*([\\d.,\\s]+)$`, 'im');
+  return perTool ? sumCommaList(perTool[1]) : null;
+}
+
+// Parses the slicer's own "estimated printing time (normal mode)" line (same two comment
+// shapes as parseFilamentUsage: a plain .gcode's spaced, semicolon-prefixed comment, or a
+// bgcode metadata block's bare key=value line) into whole seconds. "Silent mode" is a distinct,
+// typically slower estimate for quieter fan profiles and is intentionally not used here.
+// Returns null, never throws, when no such line is present.
+function parsePrintTime(text) {
+  const match = lastRegexMatch(text, `^;?\\s*estimated printing time \\(normal mode\\)\\s*[:=]?\\s*(.+)$`, 'im');
+  return match ? parseDurationToSeconds(match[1].trim()) : null;
+}
+
+// Parses a slicer-style duration like "3m 41s", "1h 5m", or "2h 30m 10s" into whole seconds.
+function parseDurationToSeconds(raw) {
+  let total = 0;
+  let found = false;
+  let m = raw.match(/(\d+)h/); if (m) { total += parseInt(m[1], 10) * 3600; found = true; }
+  m = raw.match(/(\d+)m/); if (m) { total += parseInt(m[1], 10) * 60; found = true; }
+  m = raw.match(/(\d+)s/); if (m) { total += parseInt(m[1], 10); found = true; }
+  return found ? total : null;
+}
+
+// Builds a fresh RegExp per call rather than a shared module-level one -- a `g`-flagged
+// RegExp carries mutable `lastIndex` state across `.exec()` calls, and decode3mf's async path
+// means concurrent preview requests can genuinely interleave within this process.
+function lastRegexMatch(text, source, flags) {
+  const re = new RegExp(source, flags.includes('g') ? flags : flags + 'g');
+  let m, last = null;
+  while ((m = re.exec(text)) !== null) last = m;
+  return last;
+}
+
+function sumCommaList(raw) {
+  const nums = raw.split(',').map((s) => parseFloat(s.trim())).filter(Number.isFinite);
+  if (nums.length === 0) return null;
+  const sum = nums.reduce((a, b) => a + b, 0);
+  return Math.round(sum * 1000) / 1000; // avoid float artifacts from summing (e.g. 5.2+3.1+2.0)
+}
+
+module.exports = { decodeBgcode, decode3mf, extractBgcodeMetadataText, GcodeDecodeError, parseFilamentUsage, parsePrintTime };

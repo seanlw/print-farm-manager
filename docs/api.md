@@ -364,7 +364,7 @@ Returns `404` if not found.
 
 Optional query param `?part_id=N` to filter by part.
 
-Returns all G-code records. Each record includes `part_id`, `printer_model`, `filename`, `filepath`, `parts_per_plate`, `est_print_secs`, `material_grams`, `ams_slot`, `file_size`, `created_at`.
+Returns all G-code records. Each record includes `part_id`, `printer_model`, `filename`, `filepath`, `parts_per_plate`, `est_print_secs`, `material_grams`, `ams_slot`, `file_size`, `filament_used_grams`, `filament_used_mm`, `created_at`.
 
 `filepath` stores only the filename (not an absolute path) — the server resolves the full path at runtime using its own `server/gcode/` directory. This makes the DB portable across machines.
 
@@ -374,7 +374,7 @@ When filtered by `?part_id=`, results are ordered oldest-first (`created_at` asc
 
 ### `POST /api/gcodes/parse-filename`
 
-Parses a G-code filename and returns structured fields without saving anything. Used to pre-fill the upload form and per-gcode estimate inputs.
+Parses a G-code filename and returns structured fields without saving anything. Used to pre-fill the upload form, before the file has actually been uploaded (so filename is the only signal available at that point).
 
 **Body:** `{ "filename": "4x Left Bracket_0.20n_0.40mm_MK4S_MK4S_5h11m.bgcode" }`
 
@@ -393,6 +393,19 @@ Parses a G-code filename and returns structured fields without saving anything. 
 **Response (no match):** `{ "parse_failed": true, "material_grams": null }`
 
 `material_grams` is extracted from flexible patterns anywhere in the filename (e.g. `45g`, `1.2kg`) and is returned regardless of whether the strict Bambu-format parse succeeded. Either field may be `null` if not found.
+
+### `POST /api/gcodes/:id/parse-gcode`
+
+Re-derives print time and filament weight from an already-uploaded G-code's own slicer metadata, real values read from the file's content, not a filename guess. Used by the "Parse G-code" button on each G-code row in a part's Details panel, so an operator can populate the time/material draft inputs from what the slicer actually recorded.
+
+Always decodes and parses fresh on every call (this is an explicit, infrequent, user-triggered action, not a passive backfill), and returns what it found regardless of what's already stored, so the response always reflects the real file content. As a side effect, it also persists `filament_used_grams`/`filament_used_mm` on the row via the same non-destructive `COALESCE` rule used by `GET /:id/preview` (never overwrites an already-set value), which benefits the 3D Viewer and any other consumer even if the operator doesn't click Save afterward. It does **not** auto-persist `material_grams` or `est_print_secs`; those stay under the operator's control via the existing draft-input/Save flow.
+
+**Response (success):**
+```json
+{ "filament_used_grams": 0.75, "filament_used_mm": 252.22, "est_print_secs": 221 }
+```
+
+Any field is `null` if not found in the file's metadata. Returns `404` if the record or its on-disk file doesn't exist, `422` with a typed `code` if the file can't be decoded (same codes as `GET /:id/preview`).
 
 ### `POST /api/gcodes/upload`
 
@@ -438,6 +451,8 @@ Historical jobs (`finished`, `failed`, `cancelled`) are retained with their `gco
 Returns the G-code as plain text (`Content-Type: text/plain`), normalized regardless of source format — used by the Part Details 3D viewer. `.gcode` files are served as-is; `.bgcode` (Prusa's binary format) and `.3mf` (Bambu's zip project file) are decoded/extracted server-side via `server/gcode-decode.js`, so the client only ever deals with plain text.
 
 Returns `404` if the record or its on-disk file doesn't exist. Returns `422` with `{ "error": "...", "code": "..." }` if the file can't be decoded — either one of `server/gcode-decode.js`'s typed codes (e.g. `INVALID_BGCODE`, `UNSUPPORTED_COMPRESSION`, `NO_GCODE_IN_3MF`, `DECOMPRESSED_TOO_LARGE` — decompressed output over the 200 MB cap — see that file for the full set), or `DECODE_FAILED` for any other unexpected decode error (this route converts every decode failure to a `422`, not just the explicitly-typed ones, so a malformed file can't crash the request).
+
+Also lazily parses and persists real filament-usage stats from the source file's own slicer metadata (see `docs/database.md`'s `gcodes` section for exactly where each source format stores this), reported via the `X-Filament-Used-Grams` / `X-Filament-Used-Mm` response headers, present only when the source file has recognizable slicer metadata, absent otherwise (e.g. a hand-written `.gcode` with no slicer comments). Each header is a plain decimal string, e.g. `X-Filament-Used-Grams: 0.75`.
 
 ---
 

@@ -422,6 +422,7 @@ function GcodeUploadPanel({ part, onUploaded, filamentTypes, filamentColors, pro
 function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors, projectMaterial, projectColor }) {
   const [timeDraft, setTimeDraft]         = useState(formatDurationForInput(gc.est_print_secs));
   const [materialDraft, setMaterialDraft] = useState(formatMaterialForInput(gc.material_grams));
+  const [filamentUsed, setFilamentUsed]   = useState({ grams: gc.filament_used_grams, mm: gc.filament_used_mm });
   const [parsing, setParsing]             = useState(false);
   const [saving, setSaving]               = useState(false);
   const [error, setError]                 = useState(null);
@@ -435,10 +436,11 @@ function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors
   useEffect(() => {
     setTimeDraft(formatDurationForInput(gc.est_print_secs));
     setMaterialDraft(formatMaterialForInput(gc.material_grams));
+    setFilamentUsed({ grams: gc.filament_used_grams, mm: gc.filament_used_mm });
     setReqMaterial(gc.required_material || '');
     setReqColor(gc.required_color || '');
     try { setSelectedGroups(gc.allowed_groups ? JSON.parse(gc.allowed_groups) : []); } catch (_) { setSelectedGroups([]); }
-  }, [gc.est_print_secs, gc.material_grams, gc.required_material, gc.required_color, gc.allowed_groups]);
+  }, [gc.est_print_secs, gc.material_grams, gc.filament_used_grams, gc.filament_used_mm, gc.required_material, gc.required_color, gc.allowed_groups]);
 
   useEffect(() => {
     fetch(`/api/printers/groups?model=${encodeURIComponent(gc.printer_model)}`)
@@ -449,20 +451,24 @@ function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors
     setSelectedGroups(prev => prev.includes(g) ? prev.filter(x => x !== g) : [...prev, g]);
   }
 
-  async function parseFromFilename() {
+  async function parseFromGcode() {
     setParsing(true);
     setError(null);
     try {
-      const res = await fetch('/api/gcodes/parse-filename', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: gc.filename }),
-      });
+      const res = await fetch(`/api/gcodes/${gc.id}/parse-gcode`, { method: 'POST' });
       const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || 'Parse failed.');
+        setParsing(false);
+        return;
+      }
       if (data.est_print_secs != null) setTimeDraft(formatDurationForInput(data.est_print_secs));
-      if (data.material_grams != null) setMaterialDraft(formatMaterialForInput(data.material_grams));
-      if (data.est_print_secs == null && data.material_grams == null) {
-        setError('No time or material data found in filename.');
+      if (data.filament_used_grams != null) setMaterialDraft(formatMaterialForInput(data.filament_used_grams));
+      if (data.filament_used_grams != null || data.filament_used_mm != null) {
+        setFilamentUsed({ grams: data.filament_used_grams, mm: data.filament_used_mm });
+      }
+      if (data.est_print_secs == null && data.filament_used_grams == null) {
+        setError('No time or filament data found in this G-code file.');
       }
     } catch (err) {
       setError(err.message);
@@ -518,6 +524,12 @@ function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors
           }}
         >×</button>
       </div>
+      {(filamentUsed.grams != null || filamentUsed.mm != null) && (
+        <div style={{ fontSize: 11, color: '#64748b' }}>
+          Filament used: {filamentUsed.grams != null ? `${filamentUsed.grams.toFixed(2)} g` : 'unknown'}
+          {filamentUsed.mm != null ? ` (${filamentUsed.mm.toFixed(0)} mm)` : ''}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <span style={{ color: '#e2e8f0', fontSize: 12, fontWeight: 600, flexShrink: 0 }}>{gc.parts_per_plate}x</span>
         <span style={{ color: '#475569', fontSize: 11, flexShrink: 0 }}>per plate:</span>
@@ -538,9 +550,9 @@ function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors
           style={{ ...inputSx, width: 110, fontSize: 12 }}
         />
         <button
-          onClick={parseFromFilename}
+          onClick={parseFromGcode}
           disabled={parsing}
-          title="Re-read print time and material weight from the filename (e.g. …_2h30m_45g.gcode)"
+          title="Read print time and filament weight from this file's own slicer metadata"
           style={{
             background: '#1f2937', color: '#94a3b8',
             border: '1px solid #2d3748', borderRadius: 4,
@@ -548,7 +560,7 @@ function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors
             opacity: parsing ? 0.7 : 1, flexShrink: 0,
           }}
         >
-          {parsing ? 'Parsing…' : 'Parse filename'}
+          {parsing ? 'Parsing…' : 'Parse G-code'}
         </button>
         <button
           onClick={save}

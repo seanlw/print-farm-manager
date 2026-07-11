@@ -25,6 +25,20 @@ Also verified: hot reload actually round-trips through the bind mount (`docker c
 - `README.md`: added a "Prefer Docker instead of a local Node.js install?" subsection under Quick Start (Development), alongside (not replacing) the native steps; documented running the test suite via `docker compose exec print-farm-manager-dev npm test`.
 - `CONTRIBUTING.md`: same Docker cross-reference and test-running note added to "Getting Set Up", which had its own independent copy of the native setup steps this PR hadn't touched yet.
 - `docs/installation.md`, `docs/README.md`: cross-referenced the new `dev` service from the existing dev-mode note, the top-level Quick Start, and the file-structure index.
+## 2026-07-11: fix cross-page status disagreement after a missed-finish hold
+
+Reported by Joel: after aborting a print, Fleet showed the printer as held/awaiting confirmation ("Idle" badge, green Set Ready/Bad Print box), Dashboard rendered it green as if FINISHED, and the Jobs page still said "Printing" for the same job. Root cause: when a printer goes `PRINTING` -> `IDLE` directly between two polls (no observable `FINISHED`/`STOPPED` tick), `poller.js` correctly holds the printer, but `scheduler.js`'s `statusChange` listener has no case for `newStatus === 'IDLE'` (unlike the `STOPPED` case, which cancels the job), so the job row is never resolved and stays at `status = 'printing'` until the operator uses Set Ready or Bad Print. The Jobs page reads `jobs.status` with no visibility into printer hold state, so it kept reporting the stale value as truth. This never affected `completed_qty`: Set Ready and Bad Print already resolve the job correctly once used.
+
+Separately found and fixed while investigating: the "awaiting sign-off" derived-status check (`is_held === 1` AND status `FINISHED`/`IDLE`) is a documented sync pair across Fleet.jsx, Dashboard.jsx, and Printers.jsx. Fleet.jsx already included `STOPPED` in that check (with a comment explaining why); Dashboard.jsx, Printers.jsx, and the server-side `/api/dashboard` stat had drifted and did not, so a held `STOPPED` printer would show the confirmation UI on Fleet but not be counted as "awaiting" on Dashboard or Printers.
+
+### Changes
+- `server/routes/jobs.js`: `GET /api/jobs` and `GET /api/jobs/:id` now join `printers.is_held AS printer_is_held` and `printers.status AS printer_status`. Display-only additions; `jobs.status` itself is unchanged.
+- `client/src/pages/Jobs.jsx`: added a `displayJobStatus()` helper: a `printing` job whose printer is already held and not actually `PRINTING` renders as "Awaiting Sign-off" (green) instead of "Printing" (blue). Never writes back to `jobs.status`.
+- `client/src/pages/Dashboard.jsx`, `client/src/pages/Printers.jsx`, `server/routes/dashboard.js`: added `STOPPED` to the "awaiting sign-off" condition, matching Fleet.jsx.
+- `server/tests/jobs-route.test.js`: new file; asserts `printer_is_held`/`printer_status` are present and correctly flip a `printing` job into the awaiting-confirmation shape after a missed-finish hold.
+- `docs/api.md`, `docs/web-app.md`, `docs/poller.md`: documented the missed-finish hold path, the new joined fields, and the display-only "Awaiting Sign-off" badge.
+
+Client-side change only touches display logic; not hardware-dependent, no validation-on-hardware claim applicable.
 
 ---
 

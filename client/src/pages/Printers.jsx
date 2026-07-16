@@ -66,6 +66,7 @@ export default function Printers() {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [filamentTypes, setFilamentTypes]   = useState([]);
   const [filamentColors, setFilamentColors] = useState([]);
+  const [registryGroups, setRegistryGroups] = useState([]);
   const [bulkMaterial, setBulkMaterial] = useState('');
   const [bulkColor, setBulkColor]       = useState('');
   const [bulkGroup, setBulkGroup]       = useState('');
@@ -89,6 +90,7 @@ export default function Printers() {
     fetchPrinters();
     fetch('/api/filaments/types').then(r => r.json()).then(setFilamentTypes).catch(() => {});
     fetch('/api/filaments/colors').then(r => r.json()).then(setFilamentColors).catch(() => {});
+    fetch('/api/groups').then(r => r.json()).then(groups => setRegistryGroups(groups.map(g => g.name))).catch(() => {});
   }, [fetchPrinters]);
 
   function persistCollapsed(next) {
@@ -137,10 +139,12 @@ export default function Printers() {
     setBulkGroup('');
   }
 
-  // Distinct existing group names across all loaded printers — powers the bulk-group autocomplete
+  // Registered groups (not just ones currently assigned to a loaded printer):
+  // powers the bulk-group autocomplete. Sourced from the persisted registry so
+  // a group stays suggested even if no printer currently carries it.
   const existingGroups = useMemo(
-    () => [...new Set(printers.map(p => p.group_name).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
-    [printers]
+    () => [...registryGroups].sort((a, b) => a.localeCompare(b)),
+    [registryGroups]
   );
 
   async function applyBulk() {

@@ -326,7 +326,7 @@ function GcodeUploadPanel({ part, onUploaded, filamentTypes, filamentColors, pro
               <option value="">{t('common.selectPlaceholder')}</option>
               {amsSlots.map(s => s.slot === -1
                 ? <option key="ext" value="-1">{t('projects.externalSpool')}{s.type ? ` (${s.type})` : ''}</option>
-                : <option key={s.slot} value={String(s.slot)}>{t('projects.amsSlotOption', { slot: s.slot, type: s.type || t('projects.amsUnknownType') })}</option>
+                : <option key={s.slot} value={String(s.slot)}>{t('projects.amsSlotOption', { slot: s.slot + 1, type: s.type || t('projects.amsUnknownType') })}</option>
               )}
             </select>
           </div>

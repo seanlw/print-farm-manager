@@ -2,6 +2,17 @@
 
 ---
 
+## 2026-07-26: fix AMS slot picker showing 0-indexed slot numbers (issue #38)
+
+The Bambu AMS slot picker on the Upload G-code form (Projects.jsx) labeled slots "Slot 0", "Slot 1", "Slot 2", "Slot 3" for a standard four-tray AMS unit, because `server/drivers/bambu.js`'s `getAmsSlots` computes `slot: amsId * 4 + tray.id` straight from Bambu's own 0-indexed `tray.id`, and the client rendered that raw number without adjustment. Operators expect slot numbering to start at 1, matching the physical labels printed on the AMS unit and Bambu Studio's own UI.
+
+Fixed at display time only: the option label now shows `s.slot + 1`. The `value` submitted with the form (and everything server-side: the `ams_slot` column, the `ams_mapping` array sent to the printer over MQTT) still uses the real 0-indexed `s.slot`, since that is the actual protocol index Bambu's firmware expects. This is a label-only change; no stored data or protocol payload shape changed.
+
+### Changes
+- `client/src/pages/Projects.jsx`: AMS slot `<option>` label now interpolates `slot + 1` instead of the raw 0-indexed value; the option's `value` attribute is unchanged.
+
+Verified: full test suite passes, `npm run build` succeeds. Not validated against a physical AMS unit; the value submitted with the upload form is unchanged, so this is a label-only display fix.
+
 ## 2026-07-24: merge community i18n foundation (PR #19), fix a rebase-era translation gap and a status-color drift
 
 Merged community PR #19 (react-i18next wiring, English catalogue in `client/src/locales/en.json`, language-switcher scaffold in Settings), reviewed over eight rounds before approval. Behavior and rendering are unchanged in English; a follow-up PR is expected to add real non-English catalogues.

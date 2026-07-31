@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-07-30: Projects page only shows Active projects by default
+
+Joel noticed the Projects page listed every project regardless of status, so a farm with a long history of finished and shelved work buried the projects actually in flight. Now only `active` projects show by default; `draft`, `paused`, and `completed` are each hidden behind their own "Show X (count)" checkbox above the list, and a checkbox only appears when at least one project has that status. State persists per browser via `localStorage`, matching the existing "Show decommissioned" pattern on the Printers page. If every project ends up filtered out, an empty-state prompts to check a box instead of showing the misleading first-run "create your first project" message.
+
+No change to which projects the scheduler dispatches to, drag-to-reorder priority, or any endpoint; this is purely a client-side list filter.
+
+### Changes
+- `client/src/pages/Projects.jsx`: added `showDraft`/`showPaused`/`showCompleted` state (persisted to `localStorage`), a checkbox row above the project list, and a `visibleProjects` filter (defaults to `active` only) used in place of the raw `projects` array for the list and its empty state.
+- `docs/web-app.md`: documented the default filter and the checkboxes in the Projects page's List view section.
+
+## 2026-07-30: dashboard's Active Projects panel ignored manual project priority
+
+Joel reordered projects on the Projects page and noticed the Dashboard's Active Projects panel kept showing them in a different order. Root cause: `GET /api/dashboard` queried active projects with `ORDER BY created_at ASC` only. `GET /api/projects` (the Projects page) and the scheduler's dispatch candidate query both order by `priority ASC, created_at ASC` (added 2026-04-07), but the dashboard route predates that feature by one day and was never updated to match, so it always showed projects oldest-first regardless of any manual reordering.
+
+Fixed by adding `priority ASC` to the dashboard's active-projects query, matching the other two. Verified against a running instance: with two active projects where the older one had the lower-priority (higher) number, the dashboard now lists the higher-priority, newer project first, matching the Projects page and what the scheduler actually dispatches next.
+
+### Changes
+- `server/routes/dashboard.js`: `active_projects` query now orders by `priority ASC, created_at ASC` instead of `created_at ASC` alone.
+- `server/tests/dashboard.test.js` (new): covers priority ordering, the `created_at` tiebreaker, and exclusion of non-active projects.
+- `docs/api.md`, `docs/web-app.md`: documented that `active_projects` and the Dashboard's Active Projects panel are ordered by priority, matching the Projects page.
+
+---
+
 ## 2026-07-26: fix AMS slot picker showing 0-indexed slot numbers (issue #38)
 
 The Bambu AMS slot picker on the Upload G-code form (Projects.jsx) labeled slots "Slot 0", "Slot 1", "Slot 2", "Slot 3" for a standard four-tray AMS unit, because `server/drivers/bambu.js`'s `getAmsSlots` computes `slot: amsId * 4 + tray.id` straight from Bambu's own 0-indexed `tray.id`, and the client rendered that raw number without adjustment. Operators expect slot numbering to start at 1, matching the physical labels printed on the AMS unit and Bambu Studio's own UI.
@@ -155,21 +178,8 @@ Verified live against a running instance for all three trigger points: adding a 
 
 **Follow-up (re-audit of the whole flow):** re-traced the client end to end and found the identical list-staleness bug on a second, sibling code path: `saveQtys()` (the Details panel's Have/Need editor, used to raise `target_qty` and reopen a closed part) shares the same `onRefresh` prop as `addPart()`, and that prop only ever called `fetchDetail`, never `fetchProjects` — same gap, just reached via a different UI action. Fixed the shared `onRefresh` to refresh both. Also found `docs/web-app.md`'s Projects page section was stale independent of this PR — it described the header status control as a single "context-sensitive action button" and claimed `completed` has "no button", when it's actually a dropdown (`STATUS_MENU` in `Projects.jsx`) with a `Re-activate` option for `completed`, plus `Delete project`/`Mark complete` options the doc didn't mention at all for the other statuses. Corrected, and expanded the Quantities/Upload G-code/Add Part descriptions to reflect the reactivation and sweep behavior from all three rounds above.
 
-Verified all three trigger points again, this time driven through the actual browser UI rather than the API directly: adding a part, uploading its first G-code, and raising `target_qty` via the Details panel's Save button on a `completed` project. Each correctly reactivated the project, produced a fresh sweep log line, and updated the projects list immediately without a manual reload.
-
-### Changes
-- `server/routes/parts.js`: `POST /` reactivates the parent project if it's `completed` and sweeps; `PUT /:id` now also sweeps when its existing reactivation branch fires; reworded the `POST /` comment for accuracy.
-- `server/routes/gcodes.js`: `POST /upload` sweeps for idle printers after a successful upload, via an optional `scheduler` argument.
-- `server/index.js`: `partsRouter` and `gcodesRouter` moved from module-load-time instantiation to inside the `app.listen()` callback, passed `scheduler` like `projectsRouter` already was.
-- `server/routes/projects.js`: `POST /:id/reactivate` also checks for open parts with `completed_qty < target_qty`.
-- `client/src/pages/Projects.jsx`: `addPart()` refreshes `fetchProjects()` alongside `fetchDetail()`; `PartDetailsPanel`'s shared `onRefresh` prop (used by `saveQtys()`, `saveName()`, `deleteGcode()`) does too.
-- `server/tests/parts-sort.test.js`, `server/tests/projects-status.test.js`: added coverage for the reactivation logic.
-- `server/tests/parts-reactivate-sweep.test.js` (new, extended): covers `sweepIdlePrinters()` for both `POST /` and `PUT /:id` in `parts.js`.
-- `server/tests/gcodes-upload-sweep.test.js` (new): covers `sweepIdlePrinters()` for `POST /api/gcodes/upload`.
-- `docs/server.md`: documented the `(db, scheduler)` factory pattern (now covering `gcodes.js` too), why these routers are mounted inside `app.listen()`, and the module-scoped-router testing gotcha.
-- `docs/api.md`: documented the reactivation/sweep behavior on `POST /api/parts`, `PUT /api/parts/:id`, and `POST /api/gcodes/upload`; corrected the `POST /api/parts` wording in round 3.
-
 ---
+
 ## 2026-07-14: i18n formatting locale: separate regional date/number format from translation language
 
 The previous fix (feeding `i18n.resolvedLanguage` into every `Intl` call so formatting followed

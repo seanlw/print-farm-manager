@@ -2,6 +2,14 @@
 
 ---
 
+## 2026-08-02: document the i18n contribution rule in CONTRIBUTING.md
+
+The i18n foundation (react-i18next, `client/src/locales/en.json`, `docs/TRANSLATING.md`) landed as its own PR, but CONTRIBUTING.md's Project Conventions list was never updated to tell feature contributors about it. `docs/TRANSLATING.md` explains how to add a new language, but nothing told a contributor adding a new page or button that hardcoding a string in JSX was the wrong move in the first place. Added a load bearing convention bullet, matching the tone of the existing DB/timestamp/booleans bullets, that points new UI text at `t('namespace.key')` plus an `en.json` entry, and makes explicit that contributors are not on the hook for translating the other language files themselves.
+
+### Changes
+- `CONTRIBUTING.md`: added a "New UI text goes through i18n" bullet to Project Conventions, linking to `docs/TRANSLATING.md` for the key convention and pluralization rules.
+- `CLAUDE.md`: added the same rule to the Client conventions section.
+
 ## 2026-08-02: delete a decommissioned printer, and stop its connection from reconnecting forever (issue #45)
 
 A community comment on issue #45 asked for the ability to actually delete a decommissioned printer instead of leaving it parked forever. The `DELETE /api/printers/:id` route already existed but was unguarded: it ran a bare `DELETE FROM printers`, which would throw a foreign key error against any printer with job history (`jobs.printer_id` is `NOT NULL REFERENCES printers(id)`), and it never touched an active printer's driver connection cache, so it was effectively unreachable for a real farm printer.

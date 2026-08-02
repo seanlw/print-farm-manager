@@ -69,6 +69,7 @@ Print Farm Manager runs a real fleet of 50+ printers (Prusa, Bambu, Elegoo, Klip
 - Cross-page signals use window CustomEvents (see `farmNameChanged`), not context. There are no providers.
 - File uploads use FormData without a Content-Type header; G-code upload alone uses XMLHttpRequest for progress reporting.
 - New layouts must work at the 600 px breakpoint (scoped inline `<style>` blocks, see App.jsx and Jobs.jsx).
+- New UI text goes through i18n, never hardcoded in JSX. Add a key to `client/src/locales/en.json` (the source of truth for every user-facing string, and the schema every other language file must match) and render it with `t('namespace.key')`. See docs/TRANSLATING.md for the key convention, pluralization, and `common.*` versus a page namespace.
 
 ## Sync pairs: code that must change together
 

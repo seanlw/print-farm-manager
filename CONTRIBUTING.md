@@ -43,6 +43,7 @@ These are load bearing. PRs that break them will be asked to change, no matter h
 - **Booleans in SQLite are INTEGER** `0` / `1`.
 - **Partial updates use `COALESCE(?, column)`** so that omitting a field leaves the existing value intact.
 - **Route modules export a factory** `(db) => router` and are mounted in `server/index.js`.
+- **New UI text goes through i18n, never hardcoded in JSX.** Add a key to `client/src/locales/en.json` (the source of truth for every user-facing string, and the schema every other language file must match) and render it with `t('namespace.key')`. You do not need to translate the other language files yourself, translation is handled separately from feature work. See [docs/TRANSLATING.md](docs/TRANSLATING.md) for the key convention, pluralization, and what belongs in `common.*` versus a page namespace.
 - **Part counts are sacred.** Any code path that credits `completed_qty` must be impossible to double-trigger. If your change touches job completion, recovery, or operator confirmation, explain in the PR how it avoids double crediting.
 
 ## Documentation Is Part of the Change

@@ -409,7 +409,13 @@
     "noteHelpText": "Enter saves · Shift+Enter newline · Esc cancels",
     "editNoteTitle": "Click to edit note",
     "addNotePlaceholderText": "Add investigation note…",
-    "viewHistoryTitle": "View history"
+    "viewHistoryTitle": "View history",
+    "deleteButton": "Delete Printer",
+    "deleteButtonTitle": "Permanently delete this printer",
+    "deleteTitle": "Delete {{name}}?",
+    "deleteMessage": "This permanently removes the printer and its job history from Print Farm Manager. This cannot be undone.",
+    "deletedToast": "{{name}} deleted",
+    "deleteFailedToast": "Failed to delete printer: {{message}}"
   },
   "settings": {
     "title": "Settings",

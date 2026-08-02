@@ -100,6 +100,24 @@ export default function Decommissioned() {
     fetchPrinters();
   }
 
+  async function deletePrinter(printer) {
+    const ok = await confirm({
+      title: t('decommissioned.deleteTitle', { name: printer.name }),
+      message: t('decommissioned.deleteMessage'),
+      confirmLabel: t('decommissioned.deleteButton'),
+      danger: true,
+    });
+    if (!ok) return;
+    const res = await fetch(`/api/printers/${printer.id}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      showToast(t('decommissioned.deleteFailedToast', { message: body.error || res.status }), 'error');
+      return;
+    }
+    setPrinters(ps => ps.filter(p => p.id !== printer.id));
+    showToast(t('decommissioned.deletedToast', { name: printer.name }), 'success');
+  }
+
   if (loading) return <p style={{ color: '#64748b' }}>{t('common.loading')}</p>;
 
   return (
@@ -131,6 +149,7 @@ export default function Decommissioned() {
             onSave={saveNote}
             onRecommission={() => recommission(printer)}
             onViewHistory={() => navigate(`/printers/${printer.id}`)}
+            onDelete={() => deletePrinter(printer)}
           />
         ))}
       </div>
@@ -144,7 +163,7 @@ export default function Decommissioned() {
 function DecomCard({
   printer, isEditing, draftNote, saving,
   onBeginEdit, onCancelEdit, onChangeDraft, onSave,
-  onRecommission, onViewHistory,
+  onRecommission, onViewHistory, onDelete,
 }) {
   const { t } = useTranslation();
   const formattingLocale = useFormattingLocale();
@@ -289,6 +308,17 @@ function DecomCard({
           {note || t('decommissioned.addNotePlaceholderText')}
         </button>
       )}
+
+      <button
+        onClick={onDelete}
+        title={t('decommissioned.deleteButtonTitle')}
+        style={{
+          background: '#7f1d1d', color: '#f87171', border: 'none',
+          borderRadius: 6, padding: '6px 0', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+        }}
+      >
+        {t('decommissioned.deleteButton')}
+      </button>
     </div>
   );
 }

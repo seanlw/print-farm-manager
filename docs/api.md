@@ -106,11 +106,24 @@ Returns `404` if not found, `409` on name conflict.
 
 ### `DELETE /api/printers/:id`
 
+Permanently removes a decommissioned printer. This is a stronger action than decommission: the printer row and its job history are gone for good, and any cached driver connection is closed so the printer stops trying to reconnect in the background.
+
 ```json
 { "success": true }
 ```
 
-Returns `404` if not found.
+Preconditions, checked in order:
+
+1. **404** if the printer does not exist.
+2. **409** if the printer is still active (`is_active = 1`). Decommission it first; delete is deliberately not a shortcut around that step.
+3. **409** if the printer has an unresolved job (`uploading` or `printing`). Resolve it first via `mark-job-failure` or `set-ready` so the outcome is not silently lost.
+
+On success:
+
+- All `jobs` rows for the printer are deleted (job history has a `NOT NULL` foreign key on `printer_id`, so it cannot be left orphaned).
+- `printer_events` rows are left in place; that table has no foreign key on `printer_id` by design, so the operator note and decommission history survive the printer's deletion.
+- The driver's cached connection for the printer (Bambu MQTT, Elegoo Centauri websocket) is dropped, closing the underlying socket if one was still open. Stateless drivers (Prusa, Klipper, OctoPrint) have nothing to drop.
+- Part `completed_qty` values are untouched: deleting job history is not a credit event, and any credit already happened when the job finished.
 
 ### `POST /api/printers/:id/set-ready`
 
@@ -129,7 +142,7 @@ Returns the updated printer object.
 
 ### `POST /api/printers/:id/decommission`
 
-Removes the printer from active duty (`is_active = 0`). It will no longer be polled or receive jobs. Returns the updated printer object.
+Removes the printer from active duty (`is_active = 0`). It will no longer be polled or receive jobs. Any cached driver connection (Bambu MQTT, Elegoo Centauri websocket) is dropped so the underlying client stops retrying in the background. Returns the updated printer object.
 
 ### `POST /api/printers/:id/complete-and-decommission`
 
@@ -137,6 +150,8 @@ Operator confirms the last print was successful, then takes the machine offline 
 
 - **Normal case** (job already in `finished` status): `_handleFinished` already credited `completed_qty`; nothing is re-credited. The printer is simply decommissioned.
 - **Missed-finish case** (job still in `printing` status): credits `completed_qty` by `parts_per_plate`, marks the job `finished`, and closes the Part / Project if targets are met — same logic as `set-ready`, but ending in decommission rather than dispatch.
+
+Also drops any cached driver connection for the printer, same as decommission.
 
 Returns the updated printer object.
 
@@ -148,7 +163,7 @@ The dispatched job is marked `printing` before the next poll has updated the pri
 
 ### `POST /api/printers/:id/mark-job-failure`
 
-Marks the printer's most relevant active or recently-completed job as `failed`, undoes the `completed_qty` increment if needed, reopens the Part and Project if needed, and decommissions the printer (`is_active = 0`).
+Marks the printer's most relevant active or recently-completed job as `failed`, undoes the `completed_qty` increment if needed, reopens the Part and Project if needed, and decommissions the printer (`is_active = 0`, dropping any cached driver connection same as decommission).
 
 **Job selection — two-query priority:**
 

@@ -187,7 +187,7 @@ Per-machine history and annotation screen. Reached by clicking a printer card in
 
 Responsive grid of decommissioned printers — printers that have been pulled from the active fleet for inspection. Cards auto-fill into 2 or 3 columns depending on viewport width (`repeat(auto-fill, minmax(360px, 1fr))`).
 
-**Each card shows:** printer name, model + IP + group metadata, removal timestamp, an investigation note area, and compact icon-style action buttons (↩ Recommission, ⋯ View History) in the top-right.
+**Each card shows:** printer name, model + IP + group metadata, removal timestamp, an investigation note area, compact icon-style action buttons (↩ Recommission, ⋯ View History) in the top-right, and a full-width "Delete Printer" button at the bottom.
 
 **Note editing:**
 - Click the note area to enter edit mode (the dashed-border placeholder becomes a focused textarea)
@@ -195,6 +195,8 @@ Responsive grid of decommissioned printers — printers that have been pulled fr
 - Blur auto-saves as a backstop
 - Save no-ops if the draft is unchanged, to avoid spurious `printer_events` entries
 - Saving the note also appends a note event to the printer's timeline (`POST /api/printers/:id/events`)
+
+**Deleting a printer:** the "Delete Printer" button opens a danger confirm dialog, then calls `DELETE /api/printers/:id`. This is only reachable from this page, so only a decommissioned printer can be deleted; the API itself also rejects a still-active printer (`409`) as a second guard. If the printer has an unresolved job (`uploading` or `printing`, left over from an emergency decommission), the API returns `409` and the toast asks the operator to resolve it first via Fleet before deleting. On success the printer and its job history are gone for good and the card is removed from the list immediately; a failed request surfaces the server's error message via toast rather than removing the card.
 
 **Recommission** uses the styled `useConfirm` modal — the worker must confirm that the machine has been fully inspected and is safe to run before it returns to the active fleet. On confirm: `POST /api/printers/:id/recommission` and a success toast.
 

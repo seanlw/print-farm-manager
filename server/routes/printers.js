@@ -4,6 +4,7 @@ const Papa = require('papaparse');
 const axios = require('axios');
 const router = express.Router();
 const events = require('../events');
+const { dropConnection } = require('../drivers');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -227,11 +228,36 @@ module.exports = (db) => {
     }
   });
 
-  // DELETE /api/printers/:id
+  // DELETE /api/printers/:id (permanently remove a decommissioned printer)
+  // Only decommissioned printers may be deleted: an active printer must go
+  // through decommission first so the operator makes that call deliberately.
+  // A printer with an unresolved job (uploading/printing left over from an
+  // emergency decommission) is blocked too, so the part's completed_qty
+  // story isn't silently lost; resolve it via mark-job-failure or set-ready first.
   router.delete('/:id', (req, res) => {
     const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id);
     if (!printer) return res.status(404).json({ error: 'Printer not found' });
-    db.prepare('DELETE FROM printers WHERE id = ?').run(req.params.id);
+    if (printer.is_active) {
+      return res.status(409).json({ error: 'Printer must be decommissioned before it can be deleted' });
+    }
+    const unresolvedJob = db.prepare(
+      "SELECT id FROM jobs WHERE printer_id = ? AND status IN ('printing', 'uploading') LIMIT 1"
+    ).get(printer.id);
+    if (unresolvedJob) {
+      return res.status(409).json({ error: 'Printer has an unresolved job, resolve it before deleting' });
+    }
+
+    // Drop any cached persistent connection (Bambu MQTT, Elegoo websocket) so a
+    // deleted printer stops reconnecting in the background. printer_events has
+    // no FK on printer_id and is kept intentionally (see server/events.js).
+    dropConnection(printer);
+
+    db.transaction(() => {
+      db.prepare('DELETE FROM jobs WHERE printer_id = ?').run(printer.id);
+      db.prepare('DELETE FROM printers WHERE id = ?').run(printer.id);
+    })();
+
+    console.log(`[printers] ${printer.name} deleted`);
     res.json({ success: true });
   });
 
@@ -242,6 +268,9 @@ module.exports = (db) => {
     const now = Date.now();
     db.prepare('UPDATE printers SET is_active = 0, decommissioned_at = ? WHERE id = ?').run(now, printer.id);
     events.insert(printer.id, 'decommission', req.body?.note ?? null);
+    // Stop the driver's background reconnect loop: a decommissioned printer
+    // must not keep flooding logs trying to reach hardware nobody expects to answer.
+    dropConnection(printer);
     console.log(`[printers] ${printer.name} decommissioned`);
     res.json(db.prepare('SELECT * FROM printers WHERE id = ?').get(printer.id));
   });
@@ -323,6 +352,7 @@ module.exports = (db) => {
     const decommNote = req.body?.note ?? null;
     db.prepare('UPDATE printers SET is_active = 0, is_held = 0, decommissioned_at = ?, decommission_note = ? WHERE id = ?').run(now, decommNote, printer.id);
     events.insert(printer.id, 'decommission', decommNote ?? 'operator confirmed successful print — taken offline for maintenance');
+    dropConnection(printer);
     console.log(`[printers] ${printer.name} decommissioned after confirmed good print`);
     res.json(db.prepare('SELECT * FROM printers WHERE id = ?').get(printer.id));
   });
@@ -378,6 +408,7 @@ module.exports = (db) => {
       const noJobNote = req.body?.note ?? null;
       db.prepare('UPDATE printers SET is_active = 0, decommissioned_at = ?, decommission_note = ? WHERE id = ?').run(now, noJobNote, printer.id);
       events.insert(printer.id, 'job_failed', noJobNote ?? 'No tracked job — printer decommissioned for investigation');
+      dropConnection(printer);
       console.log(`[printers] ${printer.name} decommissioned (no tracked job to mark failed)`);
       return res.json({ success: true, job_id: null });
     }
@@ -418,6 +449,7 @@ module.exports = (db) => {
       ? `Job ${job.id} — part: ${failedPart?.name ?? 'unknown'} — ${failNote}`
       : `Job ${job.id} — part: ${failedPart?.name ?? 'unknown'}`;
     events.insert(printer.id, 'job_failed', eventNote);
+    dropConnection(printer);
 
     console.log(`[printers] Job ${job.id} marked failed — ${printer.name} decommissioned pending investigation`);
     res.json({ success: true, job_id: job.id });

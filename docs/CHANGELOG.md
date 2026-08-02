@@ -2,6 +2,26 @@
 
 ---
 
+## 2026-08-02: delete a decommissioned printer, and stop its connection from reconnecting forever (issue #45)
+
+A community comment on issue #45 asked for the ability to actually delete a decommissioned printer instead of leaving it parked forever. The `DELETE /api/printers/:id` route already existed but was unguarded: it ran a bare `DELETE FROM printers`, which would throw a foreign key error against any printer with job history (`jobs.printer_id` is `NOT NULL REFERENCES printers(id)`), and it never touched an active printer's driver connection cache, so it was effectively unreachable for a real farm printer.
+
+Investigating the same issue turned up its actual root cause too: a decommissioned printer's background driver connection was never closed. Bambu (MQTT) and Elegoo Centauri/Centauri 2 (websocket) drivers hold a persistent connection per printer in a module-level `Map`, and nothing removed the entry when a printer went to `is_active = 0`. The underlying client library kept retrying on its own reconnect timer indefinitely, which is exactly the "connected, reconnected, etc every few seconds" log flood the issue reported. Both fixes share the same mechanism, so they landed together.
+
+Delete is now a deliberate, guarded action: only reachable for an already-decommissioned printer (`409` otherwise), blocked if the printer still has an unresolved `uploading`/`printing` job so an operator can't lose that job's outcome by accident (`409`), and it cascades job history for that printer in the same transaction as the printer row so no orphaned rows are left behind. `printer_events` is deliberately left untouched: it already has no foreign key on `printer_id`, by design, so operator notes and decommission history survive the printer's deletion. Driver code was written and tested against mocks only; not yet validated against real Bambu or Elegoo hardware.
+
+### Changes
+- `server/drivers/bambu.js`, `server/drivers/elegoo-centauri.js`, `server/drivers/elegoo-centauri2.js`: exported the existing internal `dropConnection` function so it can be called from outside the driver.
+- `server/drivers/index.js`: added a `dropConnection(printer)` registry helper that looks up the printer's driver and calls its `dropConnection` if it has one; a no-op for stateless drivers (Prusa, Klipper, OctoPrint) and safe against an unknown printer type.
+- `server/routes/printers.js`: `DELETE /api/printers/:id` now requires the printer to be decommissioned and have no unresolved job, drops the driver connection cache, and deletes the printer's `jobs` rows in the same transaction as the printer row. All four code paths that set `is_active = 0` (`decommission`, `complete-and-decommission`, `mark-job-failure`'s two branches) now also call the new `dropConnection` helper.
+- `client/src/pages/Decommissioned.jsx`: added a "Delete Printer" button to each card, gated behind a danger confirm dialog, calling the new guarded `DELETE` endpoint and removing the card from the list on success.
+- `client/src/locales/en.json`: added the `decommissioned.delete*` translation keys used by the new button, confirm dialog, and toasts.
+- `docs/api.md`: documented the guard rails and cleanup behavior on `DELETE /api/printers/:id`, and noted the connection-drop side effect on the three decommission endpoints.
+- `docs/web-app.md`: documented the new Delete Printer button on the Decommissioned page.
+- `docs/driver-authoring.md`: added `dropConnection(printerId)` to the documented optional driver exports.
+- `server/tests/printers-delete.test.js` (new): covers 404, both 409 guards, cascading job deletion, connection-cache cleanup, and that other printers/jobs are untouched.
+- `server/tests/printers-connection-cleanup.test.js` (new): regression test for issue #45, asserting all four decommission code paths drop the driver connection cache.
+
 ## 2026-07-30: Projects page only shows Active projects by default
 
 Joel noticed the Projects page listed every project regardless of status, so a farm with a long history of finished and shelved work buried the projects actually in flight. Now only `active` projects show by default; `draft`, `paused`, and `completed` are each hidden behind their own "Show X (count)" checkbox above the list, and a checkbox only appears when at least one project has that status. State persists per browser via `localStorage`, matching the existing "Show decommissioned" pattern on the Printers page. If every project ends up filtered out, an empty-state prompts to check a box instead of showing the misleading first-run "create your first project" message.

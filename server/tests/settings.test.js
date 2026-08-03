@@ -7,7 +7,16 @@ let app;
 
 beforeAll(() => {
   db = new Database(':memory:');
-  db.exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+  db.exec(`
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE printers (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      name              TEXT NOT NULL UNIQUE,
+      loaded_material   TEXT,
+      loaded_color      TEXT,
+      spoolman_spool_id INTEGER
+    );
+  `);
   db.prepare("INSERT INTO settings (key, value) VALUES ('dispatch_batch_size', '10')").run();
 
   app = express();
@@ -87,6 +96,47 @@ describe('PUT /api/settings/spoolman_enabled', () => {
     const res = await request(app).put('/api/settings/spoolman_enabled').send({ value: 'yes' });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/must be "true" or "false"/i);
+  });
+});
+
+describe('PUT /api/settings/spoolman_enabled: clears stale loaded_material/color', () => {
+  // Reset to a known 'false' starting point regardless of prior test order.
+  beforeEach(async () => {
+    await request(app).put('/api/settings/spoolman_enabled').send({ value: 'false' });
+  });
+
+  test('clears loaded_material/loaded_color on unbound printers on the false→true transition', async () => {
+    const unbound = db.prepare(
+      "INSERT INTO printers (name, loaded_material, loaded_color) VALUES ('Unbound1', 'PLA', 'Black')"
+    ).run();
+    const bound = db.prepare(
+      "INSERT INTO printers (name, loaded_material, loaded_color, spoolman_spool_id) VALUES ('Bound1', 'PETG', 'Red', 42)"
+    ).run();
+
+    const res = await request(app).put('/api/settings/spoolman_enabled').send({ value: 'true' });
+    expect(res.status).toBe(200);
+
+    const unboundRow = db.prepare('SELECT * FROM printers WHERE id = ?').get(unbound.lastInsertRowid);
+    expect(unboundRow.loaded_material).toBeNull();
+    expect(unboundRow.loaded_color).toBeNull();
+
+    const boundRow = db.prepare('SELECT * FROM printers WHERE id = ?').get(bound.lastInsertRowid);
+    expect(boundRow.loaded_material).toBe('PETG');
+    expect(boundRow.loaded_color).toBe('Red');
+  });
+
+  test('does not re-clear on a repeated true write (only fires on the transition)', async () => {
+    await request(app).put('/api/settings/spoolman_enabled').send({ value: 'true' });
+    const row = db.prepare(
+      "INSERT INTO printers (name, loaded_material, loaded_color) VALUES ('AlreadyEnabled', 'ABS', 'Grey')"
+    ).run();
+
+    const res = await request(app).put('/api/settings/spoolman_enabled').send({ value: 'true' });
+    expect(res.status).toBe(200);
+
+    const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(row.lastInsertRowid);
+    expect(printer.loaded_material).toBe('ABS');
+    expect(printer.loaded_color).toBe('Grey');
   });
 });
 

@@ -611,7 +611,7 @@ Body: `{ "value": "..." }`. Allowed keys:
 |---|---|---|
 | `dispatch_batch_size` | integer 1-100 | How many printers the scheduler keeps uploading or printing at once (a concurrency target, not a fixed group size; it draws deeper into the ready queue to fill the target if some printers have no dispatchable candidate) |
 | `farm_name` | ≤ 40 chars | Sidebar branding (falls back to "Print Farm") |
-| `spoolman_enabled` | `"true"` or `"false"` | Turns the [Spoolman integration](spoolman.md) on or off |
+| `spoolman_enabled` | `"true"` or `"false"` | Turns the [Spoolman integration](spoolman.md) on or off. On the `false` → `true` transition, clears `loaded_material`/`loaded_color` on every printer with no bound spool (see spoolman.md) |
 | `spoolman_base_url` | `http://...` or `https://...`, ≤ 200 chars | Base URL of a self-hosted Spoolman instance |
 
 Returns `400` for unknown keys or failed validation.

@@ -2,6 +2,17 @@
 
 ---
 
+## 2026-08-02: Spoolman: clear stale loaded-material on printers when enabling (issue #21)
+
+Second follow-up from the same manual testing pass: locking down the pickers (previous entry) stops new stale data from being created, but a printer that already had `loaded_material`/`loaded_color` picked from the manual library before Spoolman was ever turned on kept showing that value indefinitely, in the Fleet/Printers "Loaded" chip and everywhere else, with nothing distinguishing it from a real Spoolman-sourced value. It would only ever get cleared if the operator happened to bind a spool to that specific printer.
+
+Fixed at the point the confusion is introduced: enabling `spoolman_enabled` (the `false` → `true` transition only, not a repeated save) now clears `loaded_material`/`loaded_color` on every printer that has no bound spool, logging an `info_changed` event per affected printer so it's auditable. Printers with a bound spool are untouched, their values already came from a real spool. No client changes were needed, the "Loaded" chip already hides itself when both fields are empty.
+
+### Changes
+- `server/routes/settings.js`: `PUT /:key` for `spoolman_enabled` now bulk-clears unbound printers' `loaded_material`/`loaded_color` on the disabled→enabled transition, wrapped in a transaction, with per-printer event logging.
+- `server/tests/settings.test.js`: added a `printers` table to the in-memory schema and coverage for the clear-on-transition behavior and the no-op-on-repeat-write guard.
+- `docs/spoolman.md`, `docs/api.md`: documented the side effect.
+
 ## 2026-08-02: Spoolman: disable manual material/color picking farm-wide while enabled (issue #21)
 
 Follow-up to the loaded-spool binding chunk below, found during manual testing: PrinterDetail's edit form only made Material/Color read-only once a spool was actually bound, but every other picker for a printer's loaded material, the Add Printer form and the Printers page's bulk-edit bar, still let the operator free-pick from Spoolman's filament list even with the integration enabled. That meant a printer's `loaded_material`/`loaded_color` could still end up manually chosen rather than sourced from an actual spool, which is exactly the "which one is this and where did it come from" confusion Spoolman mode is supposed to remove, and it showed up immediately in the Fleet/Printers "Loaded" chip with no way to tell.

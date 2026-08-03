@@ -26,6 +26,8 @@ Stored in the existing `settings` key/value table (`server/db.js`), no new table
 
 Set via `PUT /api/settings/:key` (see `docs/api.md`). Changing `spoolman_base_url` clears the integration's internal cache immediately so a URL change never serves data from the old origin.
 
+**Turning `spoolman_enabled` on clears stale loaded-material data.** On the `false` → `true` transition only (not on every re-save), every printer with no bound spool (`spoolman_spool_id IS NULL`) has its `loaded_material`/`loaded_color` cleared to `NULL`, with an `info_changed` event logged per affected printer. This exists because those two fields might still be holding whatever was picked from the old manual library before the integration was turned on, and once Spoolman is the source of truth that data no longer traces back to anything real, it would otherwise sit there looking exactly like it came from a bound spool. Printers with a bound spool are untouched. The operator rebinds (or, if disabling again, manually re-picks) to set them again.
+
 ## `server/integrations/spoolman.js`
 
 The server-side client module. Every exported function checks `isEnabled(db)` first and either no-ops or throws a typed `{ code: 'SPOOLMAN_DISABLED' }` error, so a farm that never touches the setting incurs one cheap `settings` table lookup and no network calls, ever.

@@ -2,6 +2,14 @@
 
 ---
 
+## 2026-08-02: move Spoolman Integration section under Filament Library in Settings (issue #21)
+
+Requested during review: the Spoolman Integration section sat down near Farm Name/Language, separated from the Filament Library section it's an alternative data source for. Moved it to sit directly below Filament Library instead, no functional change.
+
+### Changes
+- `client/src/pages/Settings.jsx`: moved the "Spoolman Integration" `<section>` to directly follow "Filament Library".
+- `docs/web-app.md`: updated the Settings page's documented section order.
+
 ## 2026-08-02: Spoolman: clear stale loaded-material on printers when enabling (issue #21)
 
 Second follow-up from the same manual testing pass: locking down the pickers (previous entry) stops new stale data from being created, but a printer that already had `loaded_material`/`loaded_color` picked from the manual library before Spoolman was ever turned on kept showing that value indefinitely, in the Fleet/Printers "Loaded" chip and everywhere else, with nothing distinguishing it from a real Spoolman-sourced value. It would only ever get cleared if the operator happened to bind a spool to that specific printer.

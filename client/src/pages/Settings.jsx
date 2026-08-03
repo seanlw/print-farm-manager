@@ -948,6 +948,46 @@ export default function Settings() {
         )}
       </section>
 
+      {/* Spoolman Integration */}
+      <section style={{ background: '#1e2433', borderRadius: 10, padding: 20, marginBottom: 24, maxWidth: 640 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{t('settings.spoolmanTitle')}</h2>
+        <p style={{ color: '#64748b', fontSize: 13, marginBottom: 16 }}>
+          {t('settings.spoolmanHint')}
+        </p>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 16, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={spoolmanEnabled}
+            onChange={e => handleToggleSpoolmanEnabled(e.target.checked)}
+          />
+          {t('settings.spoolmanEnabledLabel')}
+        </label>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            value={spoolmanBaseUrl}
+            onChange={e => setSpoolmanBaseUrl(e.target.value)}
+            placeholder={t('settings.spoolmanBaseUrlExample')}
+            style={{ ...inputStyle, width: 320 }}
+          />
+          <button
+            onClick={handleSaveSpoolmanBaseUrl}
+            style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+          >
+            {t('common.save')}
+          </button>
+        </div>
+        {spoolmanError && (
+          <div style={{ marginTop: 10, color: '#fca5a5', fontSize: 13 }}>{spoolmanError}</div>
+        )}
+        {spoolmanEnabled && spoolmanStatus && (
+          <div style={{ marginTop: 10, fontSize: 13, color: spoolmanStatus.reachable ? '#4ade80' : '#fca5a5' }}>
+            {spoolmanStatus.reachable
+              ? t('settings.spoolmanConnected', { url: spoolmanStatus.base_url })
+              : t('settings.spoolmanUnreachable', { error: spoolmanStatus.error || spoolmanStatus.base_url })}
+          </div>
+        )}
+      </section>
+
       {/* Add Single Printer */}
       <section style={{ background: '#1e2433', borderRadius: 10, padding: 20, marginBottom: 24, maxWidth: 640 }}>
         <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{t('settings.addPrinterTitle')}</h2>
@@ -1262,46 +1302,6 @@ export default function Settings() {
         </div>
         {farmNameError && (
           <div style={{ marginTop: 10, color: '#fca5a5', fontSize: 13 }}>{farmNameError}</div>
-        )}
-      </section>
-
-      {/* Spoolman Integration */}
-      <section style={{ background: '#1e2433', borderRadius: 10, padding: 20, marginBottom: 24, maxWidth: 640 }}>
-        <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{t('settings.spoolmanTitle')}</h2>
-        <p style={{ color: '#64748b', fontSize: 13, marginBottom: 16 }}>
-          {t('settings.spoolmanHint')}
-        </p>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 16, cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={spoolmanEnabled}
-            onChange={e => handleToggleSpoolmanEnabled(e.target.checked)}
-          />
-          {t('settings.spoolmanEnabledLabel')}
-        </label>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input
-            value={spoolmanBaseUrl}
-            onChange={e => setSpoolmanBaseUrl(e.target.value)}
-            placeholder={t('settings.spoolmanBaseUrlExample')}
-            style={{ ...inputStyle, width: 320 }}
-          />
-          <button
-            onClick={handleSaveSpoolmanBaseUrl}
-            style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
-          >
-            {t('common.save')}
-          </button>
-        </div>
-        {spoolmanError && (
-          <div style={{ marginTop: 10, color: '#fca5a5', fontSize: 13 }}>{spoolmanError}</div>
-        )}
-        {spoolmanEnabled && spoolmanStatus && (
-          <div style={{ marginTop: 10, fontSize: 13, color: spoolmanStatus.reachable ? '#4ade80' : '#fca5a5' }}>
-            {spoolmanStatus.reachable
-              ? t('settings.spoolmanConnected', { url: spoolmanStatus.base_url })
-              : t('settings.spoolmanUnreachable', { error: spoolmanStatus.error || spoolmanStatus.base_url })}
-          </div>
         )}
       </section>
 

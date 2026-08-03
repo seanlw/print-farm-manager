@@ -2,6 +2,17 @@
 
 ---
 
+## 2026-08-03: fix Filament Library not refreshing after correcting the Spoolman base URL (issue #21)
+
+Reported: enabling Spoolman and having it connect successfully in Settings did not populate the Filament Library section; only a full page reload did. Root cause was in the read-only Filament Library display's own fetch effect in Settings.jsx, which is keyed on `[librarySource]` (local vs spoolman): that only fires on the actual local<->spoolman mode transition, not on a base-URL-only change. If the base URL was wrong at the moment the integration was enabled (a very ordinary sequence: check the box, see it fail, then type in the corrected URL and hit Save), `librarySource` was already `'spoolman'` by the time the URL got fixed, so the effect never re-ran and the table stayed stuck on whatever it fetched (or failed to fetch) the first time.
+
+Fixed by pulling the fetch out into its own callback and calling it explicitly from every place that changes the Spoolman configuration, not just from the mode-transition effect: saving the base URL, toggling the integration on, and restoring a backup that brings its own Spoolman settings. The shared `useFilamentLibrary()` hook (which drives every picker, not just this read-only display) already refetches correctly on all of these; this table just hadn't been wired the same way.
+
+### Changes
+- `client/src/pages/Settings.jsx`: extracted `refreshSpoolmanFilamentsDisplay`, called it from the base-URL save handler, the enable-toggle handler, and the backup-restore handler, in addition to the existing mode-transition effect.
+
+Verified live against a real Spoolman instance: reproduced the exact repro (enable with a wrong base URL, then correct it and Save) and confirmed the table now populates in the same action, no reload needed. Full test suite passes, client builds clean.
+
 ## 2026-08-03: Spoolman: use the filament's name, not its hex code, as the color value (issue #21)
 
 Feedback after live-testing against a real Spoolman instance: showing a raw hex code (`#CC0000`) as the option text in every material/color picker, and in every "Loaded: PETG · #CC0000" display, was a poor operator experience compared to a real name. Spoolman has no separate "color name" field, but it does have `Filament.name` (e.g. "Prusament PETG Signal Red"), which is exactly what the spool-bind picker already showed for a spool's identity.

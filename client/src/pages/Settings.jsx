@@ -83,15 +83,23 @@ export default function Settings() {
 
   // Read-only Spoolman filament display, grouped vendor -> filament, used only when
   // librarySource === 'spoolman' (the Filament Library section hides its manual CRUD
-  // forms in that mode; see docs/spoolman.md).
+  // forms in that mode; see docs/spoolman.md). Exposed as a callback (not just an
+  // effect) because the effect's [librarySource] dependency only fires on the
+  // local<->spoolman transition: saving a corrected base URL while already enabled
+  // never changes librarySource, so without an explicit call here the read-only
+  // table stayed stuck on whatever it last fetched (empty, if the URL was wrong at
+  // the time) until a full page reload remounted the effect.
   const [spoolmanFilaments, setSpoolmanFilaments] = useState([]);
-  useEffect(() => {
-    if (librarySource !== 'spoolman') return;
+  const refreshSpoolmanFilamentsDisplay = useCallback(() => {
     fetch('/api/spoolman/filaments')
       .then(r => (r.ok ? r.json() : []))
       .then(setSpoolmanFilaments)
       .catch(() => setSpoolmanFilaments([]));
-  }, [librarySource]);
+  }, []);
+  useEffect(() => {
+    if (librarySource !== 'spoolman') return;
+    refreshSpoolmanFilamentsDisplay();
+  }, [librarySource, refreshSpoolmanFilamentsDisplay]);
 
   // Filament Library management
   const [typeForm, setTypeForm] = useState({ name: '' });
@@ -377,6 +385,7 @@ export default function Settings() {
       if (nextEnabled) fetchSpoolmanStatus();
       else setSpoolmanStatus(null);
       refetchFilamentLibrary();
+      if (nextEnabled) refreshSpoolmanFilamentsDisplay();
     } catch (err) {
       setSpoolmanError(err.message);
     }
@@ -396,6 +405,7 @@ export default function Settings() {
       if (spoolmanEnabled) {
         fetchSpoolmanStatus();
         refetchFilamentLibrary();
+        refreshSpoolmanFilamentsDisplay();
       }
     } catch (err) {
       setSpoolmanError(err.message);
@@ -467,6 +477,7 @@ export default function Settings() {
           window.dispatchEvent(new CustomEvent('farmNameChanged', { detail: settingsData.farm_name || '' }));
           setSpoolmanEnabled(settingsData.spoolman_enabled === 'true');
           setSpoolmanBaseUrl(settingsData.spoolman_base_url || '');
+          if (settingsData.spoolman_enabled === 'true') refreshSpoolmanFilamentsDisplay();
         })
         .catch(() => {});
     } catch (err) {

@@ -2,6 +2,158 @@
 
 ---
 
+## 2026-08-03: replace the Filament Library's per-filament table with a count summary (issue #21)
+
+Requested: a farm's Spoolman library can grow large, and now that a "Manage in Spoolman" link exists for actually adding or editing filaments, listing every one of them in the read-only Filament Library section was more clutter than it was worth.
+
+Replaced the per-filament table (vendor, type, color swatch, name columns) with a single line reporting how many filaments Spoolman has, or a distinct empty-state hint when it has none. Also corrected the neighboring "Managed in Spoolman..." hint text, which still said the Spoolman Integration section was "above" it in the page even though an earlier change moved that section below the Filament Library section, leaving the wording stale.
+
+### Changes
+- `client/src/pages/Settings.jsx`: replaced the read-only filament table with a count summary line.
+- `client/src/locales/en.json`: added `settings.spoolmanLibraryEmptyHint` and pluralized `settings.spoolmanLibrarySummary_one`/`_other`; removed the now-unused `settings.colVendor`; fixed `settings.spoolmanLibraryManagedHint` to say "section below" instead of "section above".
+- `docs/spoolman.md`: updated the "Filament Library UI switch" section to describe the summary line instead of the removed table.
+
+Verified live against a real Spoolman instance: the section now shows "2 filaments in Spoolman." and the hint correctly points below. Client builds clean, full test suite passes (no server-side change, so no new tests needed).
+
+## 2026-08-03: add a "Manage in Spoolman" link to the Filament Library section (issue #21)
+
+Requested: this app doesn't manage vendors, filaments, or spools itself, that's Spoolman's job, so the read-only Filament Library view needed a direct way to get to Spoolman's own UI for adding or editing them.
+
+Added a link next to the existing "Managed in Spoolman..." hint that opens `spoolman_base_url` in a new tab. It reuses the exact same URL the server already proxies through, on the assumption (true for any normal self-hosted Spoolman on the farm's LAN) that the address is reachable from both the server and an operator's browser.
+
+### Changes
+- `client/src/pages/Settings.jsx`: added a "Manage in Spoolman ↗" link (`target="_blank"`, `rel="noopener noreferrer"`) to the read-only Filament Library section.
+- `client/src/locales/en.json`: added `settings.spoolmanManageLink`.
+- `docs/spoolman.md`: documented the link and its reachability assumption.
+
+Verified live: clicking it opens a new tab to the exact configured base URL; separately confirmed Spoolman's own UI at that address correctly shows the farm's seeded vendor, filaments, and spools.
+
+## 2026-08-03: fix Filament Library not refreshing after correcting the Spoolman base URL (issue #21)
+
+Reported: enabling Spoolman and having it connect successfully in Settings did not populate the Filament Library section; only a full page reload did. Root cause was in the read-only Filament Library display's own fetch effect in Settings.jsx, which is keyed on `[librarySource]` (local vs spoolman): that only fires on the actual local<->spoolman mode transition, not on a base-URL-only change. If the base URL was wrong at the moment the integration was enabled (a very ordinary sequence: check the box, see it fail, then type in the corrected URL and hit Save), `librarySource` was already `'spoolman'` by the time the URL got fixed, so the effect never re-ran and the table stayed stuck on whatever it fetched (or failed to fetch) the first time.
+
+Fixed by pulling the fetch out into its own callback and calling it explicitly from every place that changes the Spoolman configuration, not just from the mode-transition effect: saving the base URL, toggling the integration on, and restoring a backup that brings its own Spoolman settings. The shared `useFilamentLibrary()` hook (which drives every picker, not just this read-only display) already refetches correctly on all of these; this table just hadn't been wired the same way.
+
+### Changes
+- `client/src/pages/Settings.jsx`: extracted `refreshSpoolmanFilamentsDisplay`, called it from the base-URL save handler, the enable-toggle handler, and the backup-restore handler, in addition to the existing mode-transition effect.
+
+Verified live against a real Spoolman instance: reproduced the exact repro (enable with a wrong base URL, then correct it and Save) and confirmed the table now populates in the same action, no reload needed. Full test suite passes, client builds clean.
+
+## 2026-08-03: Spoolman: use the filament's name, not its hex code, as the color value (issue #21)
+
+Feedback after live-testing against a real Spoolman instance: showing a raw hex code (`#CC0000`) as the option text in every material/color picker, and in every "Loaded: PETG · #CC0000" display, was a poor operator experience compared to a real name. Spoolman has no separate "color name" field, but it does have `Filament.name` (e.g. "Prusament PETG Signal Red"), which is exactly what the spool-bind picker already showed for a spool's identity.
+
+Switched the color value used throughout Spoolman mode from the filament's hex code to its `name`. This had to change in exactly two places, kept in lockstep so the scheduler's plain-string equality match between a printer's `loaded_color` and a gcode's `required_color` still lines up: `useFilamentLibrary.js`'s Spoolman-mode color derivation (used by every picker) and `printers.js`'s `spoolman-bind`/`spoolman-sync` (used to snapshot a bound printer's `loaded_color`). No picker JSX needed to change at all, every picker already just renders `{c.name}` for both the option's value and label, so the fix lives entirely in what two functions put in that field. `hex_color` is still carried in the picker's data shape and still shown as a swatch elsewhere, just never used as the matching value anymore. Multi-color filaments (no single `color_hex`) are still treated as having no color, unchanged from before.
+
+### Changes
+- `client/src/useFilamentLibrary.js`: Spoolman-mode colors are now keyed and valued by `filament.name` instead of the hex code.
+- `server/routes/printers.js`: `materialColorFromSpool` now derives `loaded_color` from `filament.name`, matching the picker.
+- `docs/filaments.md`, `docs/spoolman.md`: updated the "Spoolman mode" and "Loaded-spool binding" sections to describe the name-based value instead of the hex bridge.
+- `server/tests/printers-filaments.test.js`: updated bind/sync fixtures and assertions to expect the filament name; added a case confirming a colorless (multi-color) filament still binds with no color.
+
+## 2026-08-02: Spoolman integration, part 4: usage tracking (issue #21)
+
+Fourth and last of the planned chunks (see the earlier Spoolman entries below and `docs/spoolman.md` for the full design). On print completion, reports the grams actually consumed to Spoolman via `PUT /api/v1/spool/:id/use`, so a spool's remaining weight in Spoolman stays accurate without the operator updating it by hand. This is the only chunk that touches code paths adjacent to `parts.completed_qty`, so it was deliberately built and reviewed last: every hook point calls the new `reportJobUsage` strictly after the existing credit statement, and its outcome (success, any of six no-op reasons, or an http failure) never feeds back into a `parts` or `jobs` quantity or status. A dedicated regression test in `scheduler-finished.test.js` asserts the credit is byte-identical whether the Spoolman call succeeds, fails, or rejects outright.
+
+Usage is opt-in per printer (`spoolman_report_usage`, added in the loaded-spool binding chunk) so a printer that already reports its own usage to Spoolman natively (Klipper/Moonraker) isn't double-counted, exactly the concern the upstream issue raised. The grams figure comes from `gcodes.filament_used_grams`, the field only ever written by parsing the sliced file's own metadata (`server/gcode-decode.js`), never from the operator-editable `material_grams` field, so it satisfies "not a guessed number" as the user required. Marking a Spoolman-reported job failed does not attempt to reverse the report (Spoolman's negative-amount semantics aren't documented, so this doesn't guess); a notification tells the operator to adjust the spool manually instead.
+
+Implemented from Spoolman's API source (`Donkie/Spoolman`, master branch, `spoolman/api/v1/spool.py`), not yet validated against a live Spoolman instance: standing one up and exercising a full bind, dispatch, and Set Ready cycle is the real acceptance test.
+
+### Changes
+- `server/db.js`: additive columns `jobs.spoolman_spool_id` (snapshot at dispatch, same rationale as `parts_per_plate`), `jobs.spoolman_reported_at` (idempotency guard).
+- `server/integrations/spoolman.js`: new `reportJobUsage(db, jobId)`, never throws, typed `{ ok, reason }` return for every outcome.
+- `server/scheduler.js`: `_reserveJob` now snapshots the printer's bound spool onto the job row at dispatch time; `_handleFinished` fires `reportJobUsage` (fire-and-forget) strictly after the existing `completed_qty` credit.
+- `server/index.js`: `set-ready`'s missed-finish credit branches now await `reportJobUsage` and include `spoolman_warning` in the response on a genuine http failure only.
+- `server/routes/printers.js`: same pattern in `complete-and-decommission`'s missed-finish branch; `mark-job-failure` adds a notification (not a reversal) when the job it's failing already had usage reported.
+- `docs/database.md`, `docs/api.md`, `docs/spoolman.md`: documented the new columns, the `spoolman_warning` response field, and the full usage-tracking design.
+- `server/tests/spoolman-client.test.js`: full decision-tree coverage for `reportJobUsage`, all Spoolman calls mocked.
+- `server/tests/scheduler-finished.test.js`, `server/tests/set-ready.test.js`, `server/tests/printers-decommission.test.js`: extended with Spoolman-reporting coverage, including the regression guard that `completed_qty` crediting is unaffected by a failed or rejected report.
+- `server/tests/backup-restore.test.js`: seeded and asserted the two new `jobs` columns round-trip (no `backup.js` changes needed, per the existing sync-pairs pattern).
+- `server/tests/scheduler-targeting.test.js`, `server/tests/scheduler-sweep.test.js`, `server/tests/scheduler-file.test.js`: added the new `jobs.spoolman_spool_id` column to their in-memory schemas (the real dispatch-reservation INSERT now always includes it).
+
+## 2026-08-02: move Spoolman Integration section under Filament Library in Settings (issue #21)
+
+Requested during review: the Spoolman Integration section sat down near Farm Name/Language, separated from the Filament Library section it's an alternative data source for. Moved it to sit directly below Filament Library instead, no functional change.
+
+### Changes
+- `client/src/pages/Settings.jsx`: moved the "Spoolman Integration" `<section>` to directly follow "Filament Library".
+- `docs/web-app.md`: updated the Settings page's documented section order.
+
+## 2026-08-02: Spoolman: clear stale loaded-material on printers when enabling (issue #21)
+
+Second follow-up from the same manual testing pass: locking down the pickers (previous entry) stops new stale data from being created, but a printer that already had `loaded_material`/`loaded_color` picked from the manual library before Spoolman was ever turned on kept showing that value indefinitely, in the Fleet/Printers "Loaded" chip and everywhere else, with nothing distinguishing it from a real Spoolman-sourced value. It would only ever get cleared if the operator happened to bind a spool to that specific printer.
+
+Fixed at the point the confusion is introduced: enabling `spoolman_enabled` (the `false` → `true` transition only, not a repeated save) now clears `loaded_material`/`loaded_color` on every printer that has no bound spool, logging an `info_changed` event per affected printer so it's auditable. Printers with a bound spool are untouched, their values already came from a real spool. No client changes were needed, the "Loaded" chip already hides itself when both fields are empty.
+
+### Changes
+- `server/routes/settings.js`: `PUT /:key` for `spoolman_enabled` now bulk-clears unbound printers' `loaded_material`/`loaded_color` on the disabled→enabled transition, wrapped in a transaction, with per-printer event logging.
+- `server/tests/settings.test.js`: added a `printers` table to the in-memory schema and coverage for the clear-on-transition behavior and the no-op-on-repeat-write guard.
+- `docs/spoolman.md`, `docs/api.md`: documented the side effect.
+
+## 2026-08-02: Spoolman: disable manual material/color picking farm-wide while enabled (issue #21)
+
+Follow-up to the loaded-spool binding chunk below, found during manual testing: PrinterDetail's edit form only made Material/Color read-only once a spool was actually bound, but every other picker for a printer's loaded material, the Add Printer form and the Printers page's bulk-edit bar, still let the operator free-pick from Spoolman's filament list even with the integration enabled. That meant a printer's `loaded_material`/`loaded_color` could still end up manually chosen rather than sourced from an actual spool, which is exactly the "which one is this and where did it come from" confusion Spoolman mode is supposed to remove, and it showed up immediately in the Fleet/Printers "Loaded" chip with no way to tell.
+
+Fixed by extending the restriction farm-wide: while `spoolman_enabled` is true, `loaded_material`/`loaded_color` can only be set via binding a spool (PrinterDetail's "Spoolman Spool" card). PrinterDetail's edit fields are read-only whenever the integration is on, not just when bound; the Add Printer form drops the fields entirely (a printer can't be bound before it exists, so binding happens afterward); the Printers bulk-edit bar drops its Material/Color controls (bulk free-picking would bypass the one-spool-per-printer model anyway). `required_material`/`required_color` on G-codes/projects are unaffected: those are matching criteria, not a physical spool binding, and stay free `<select>` pickers.
+
+The per-printer `spoolman_report_usage` opt-in (added in the loaded-spool binding chunk) was reconsidered and kept as-is: it exists specifically so a printer that already reports its own usage to Spoolman natively (e.g. Klipper/Moonraker) isn't double-counted once the usage-tracking chunk lands.
+
+### Changes
+- `client/src/pages/PrinterDetail.jsx`: Material/Color edit fields are now disabled whenever `spoolmanEnabled`, not only when `printer.spoolman_spool_id` is set; hint text distinguishes "bind a spool" (unbound) from "sourced from bound spool #N" (bound).
+- `client/src/pages/Settings.jsx`: Add Printer form hides the Loaded Material/Color fields while Spoolman is enabled, with a hint pointing at PrinterDetail.
+- `client/src/pages/Printers.jsx`: bulk-edit bar drops its Material/Color controls while Spoolman is enabled (Group remains available).
+- `client/src/locales/en.json`: added `settings.spoolmanBindAfterAddHint`, `printerDetail.spoolmanUnboundHint`.
+- `docs/spoolman.md`, `docs/filaments.md`: documented the farm-wide restriction and why it doesn't extend to G-code/project required-material fields.
+
+Verified live in the browser: all three pickers correctly hide/disable with Spoolman enabled and correctly reappear when disabled; existing `loaded_material`/`loaded_color` values on already-configured printers are untouched either way.
+
+## 2026-08-02: Spoolman integration, part 3: loaded-spool binding (issue #21)
+
+Third of four planned chunks (see parts 1-2 below and `docs/spoolman.md` for the roadmap). A printer can now be bound to a specific Spoolman spool; its `loaded_material`/`loaded_color` are derived from the bound spool's filament instead of typed manually. Binding is a snapshot taken once at bind time, not a live lookup: the scheduler's dispatch reservation is deliberately synchronous with no I/O, so nothing about Spoolman may sit on that call path, and the scheduler itself stays completely unaware Spoolman exists, it just keeps reading the same two plain-string columns it always has. Staying in sync with a later change in Spoolman is a manual "Sync" action, not folded into the poller, so a Spoolman outage never shows up as printer-poll noise.
+
+Also added a per-printer `spoolman_report_usage` opt-in flag (`PUT /api/printers/:id`), which does nothing yet, it exists now so the operator can configure it alongside binding a spool rather than needing a second UI change when the usage-tracking chunk lands and starts reading it.
+
+### Changes
+- `server/db.js`: additive columns `printers.spoolman_spool_id`, `printers.spoolman_report_usage` (default off).
+- `server/routes/printers.js`: `PUT /:id` now also accepts `spoolman_report_usage`; new `POST /:id/spoolman-bind`, `/spoolman-unbind`, `/spoolman-sync` endpoints.
+- `client/src/pages/PrinterDetail.jsx`: new "Spoolman Spool" card (shown only while the integration is enabled) with a bind picker, Sync/Unbind actions, and the usage-reporting checkbox; the existing Material/Color edit fields become read-only with a hint when a spool is bound.
+- `client/src/locales/en.json`: added `printerDetail.spoolman*` translation keys.
+- `docs/database.md`, `docs/api.md`, `docs/spoolman.md`: documented the new columns and endpoints.
+- `server/tests/printers-filaments.test.js`: extended with `spoolman_report_usage` PUT coverage and a new describe block for bind/unbind/sync, Spoolman calls mocked via `jest.mock('../integrations/spoolman')`.
+- `server/tests/backup-restore.test.js`: seeded and asserted the two new columns round-trip through export/restore (no `backup.js` code changes needed, new columns on an existing table are picked up automatically by its `PRAGMA table_info`-derived column lists).
+
+Verified live in the browser against the running dev server: enabling Spoolman shows the new card, the picker/bind/sync/unbind flow degrades to a clean inline error (not a crash) against an unreachable Spoolman instance, and disabling the integration hides the card again with the printer's last-known material/color intact.
+
+## 2026-08-02: Spoolman integration, part 2: Filament Library UI switch (issue #21)
+
+Second of four planned chunks (see part 1 below and `docs/spoolman.md` for the roadmap). Every material/color picker on the farm, and the Settings Filament Library section itself, now sources from Spoolman's live filament list instead of the local `filament_types`/`filament_colors` tables whenever the integration is enabled, a full mode switch rather than a per-picker toggle. Disabled (the default), nothing changes.
+
+All four pickers (Settings add-printer form, PrinterDetail, Printers bulk edit, Projects gcode/project fields) previously fetched `/api/filaments/types`/`/api/filaments/colors` independently. Extracted that into a shared `useFilamentLibrary()` hook that, in Spoolman mode, instead fetches `/api/spoolman/filaments` and derives the same `{ id, name }` / `{ id, name, hex_color, type_name }` shape the pickers already expected, so no picker's own JSX needed to branch on which mode is active. Spoolman has no separate "color name" concept, only a hex code, so under Spoolman mode the hex string itself (with a leading `#` added to match this app's own convention) becomes the picker's color value, not a friendly name, documented as a caveat in `docs/filaments.md` since it changes what a hand-typed `required_color` needs to match.
+
+### Changes
+- `client/src/useFilamentLibrary.js` (new): shared hook sourcing material/color pickers from local or Spoolman data depending on `spoolman_enabled`.
+- `client/src/pages/Settings.jsx`: Add Printer form's picker now uses the shared hook; Filament Library section renders read-only (grouped vendor/material/color/name from `/api/spoolman/filaments`) and hides its manual Add Type/Add Color forms while Spoolman mode is enabled; restoring a backup also refreshes the Spoolman settings display and filament library.
+- `client/src/pages/PrinterDetail.jsx`, `client/src/pages/Printers.jsx`, `client/src/pages/Projects.jsx`: switched their material/color pickers to the shared hook.
+- `client/src/locales/en.json`: added `settings.spoolmanLibrary*`/`settings.colVendor` translation keys.
+- `docs/filaments.md`: new "Spoolman mode" section documenting the mode switch, the hex-not-name color value, and the case-sensitive match caveat.
+- `docs/spoolman.md`: updated roadmap status.
+
+## 2026-08-02: Spoolman integration, part 1: settings and a read-only library proxy (issue #21)
+
+Upstream issue #21 asked for an optional integration with [Spoolman](https://github.com/Donkie/Spoolman), a self-hosted filament inventory manager, as an alternative to this app's manual filament library, per-printer loaded-material tracking, and usage reporting. This is the first of four planned chunks: a settings toggle, a server-side Spoolman client module, and a proxy API so the browser never talks to Spoolman directly. It has zero effect on any farm that doesn't enable it, and does not yet change any picker UI, bind spools to printers, or report usage: those are separate, later chunks (see `docs/spoolman.md` for the full roadmap).
+
+Two new settings: `spoolman_enabled` (off by default) and `spoolman_base_url` (unset by default). `server/integrations/spoolman.js` wraps Spoolman's REST API (`GET /vendor`, `GET /filament`, `GET/PUT /spool`), verified directly against Spoolman's own source on GitHub rather than guessed, with a 60 second cache on list endpoints to avoid hammering a Spoolman instance on every page load. Every function no-ops or throws a typed error when the integration is disabled, so an uninvolved farm sees exactly one extra `settings` table lookup and no network calls, ever. Implemented from Spoolman's API source (`Donkie/Spoolman`, master branch), not yet validated against a live Spoolman instance.
+
+### Changes
+- `server/db.js`: seeded `spoolman_enabled` default (`'false'`) in the settings table.
+- `server/integrations/spoolman.js` (new): Spoolman REST client with `getConfig`, `isEnabled`, `getStatus`, `listVendors`, `listFilaments`, `listSpools`, `getSpool`, `invalidateCache`.
+- `server/routes/spoolman.js` (new): proxy endpoints `GET /api/spoolman/status`, `/vendors`, `/filaments`, `/spools`, `/spools/:id`, mounted in `server/index.js`.
+- `server/routes/settings.js`: added `spoolman_enabled`/`spoolman_base_url` to `ALLOWED_KEYS` with validation; invalidates the Spoolman client's cache when the base URL changes.
+- `client/src/pages/Settings.jsx`: new "Spoolman Integration" section (enable checkbox, base URL field, connectivity indicator).
+- `client/src/locales/en.json`: added `settings.spoolman*` translation keys.
+- `docs/spoolman.md` (new), `docs/README.md`, `docs/api.md`: documented the settings keys and new endpoints.
+- `server/tests/spoolman-client.test.js`, `server/tests/spoolman-routes.test.js` (new), `server/tests/settings.test.js` (extended): all Spoolman HTTP calls mocked, never a live instance.
+
 ## 2026-08-02: document the i18n contribution rule in CONTRIBUTING.md
 
 The i18n foundation (react-i18next, `client/src/locales/en.json`, `docs/TRANSLATING.md`) landed as its own PR, but CONTRIBUTING.md's Project Conventions list was never updated to tell feature contributors about it. `docs/TRANSLATING.md` explains how to add a new language, but nothing told a contributor adding a new page or button that hardcoding a string in JSX was the wrong move in the first place. Added a load bearing convention bullet, matching the tone of the existing DB/timestamp/booleans bullets, that points new UI text at `t('namespace.key')` plus an `en.json` entry, and makes explicit that contributors are not on the hook for translating the other language files themselves.

@@ -111,6 +111,10 @@ try { db.exec('ALTER TABLE gcodes ADD COLUMN file_size INTEGER'); } catch (_) {}
 try { db.exec('ALTER TABLE gcodes ADD COLUMN filament_used_grams REAL'); } catch (_) {}
 try { db.exec('ALTER TABLE gcodes ADD COLUMN filament_used_mm REAL'); } catch (_) {}
 try { db.exec('ALTER TABLE projects ADD COLUMN allowed_groups TEXT'); } catch (_) {}
+try { db.exec('ALTER TABLE printers ADD COLUMN spoolman_spool_id INTEGER'); } catch (_) {}
+try { db.exec('ALTER TABLE printers ADD COLUMN spoolman_report_usage INTEGER DEFAULT 0'); } catch (_) {}
+try { db.exec('ALTER TABLE jobs ADD COLUMN spoolman_spool_id INTEGER'); } catch (_) {}
+try { db.exec('ALTER TABLE jobs ADD COLUMN spoolman_reported_at INTEGER'); } catch (_) {}
 
 // Printer models — source of truth for which models this farm supports.
 // New installs start empty; operator adds models in Settings.
@@ -254,6 +258,11 @@ try {
 // Seed defaults (INSERT OR IGNORE so existing values are never overwritten)
 try {
   db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('dispatch_batch_size', '10')").run();
+} catch (_) {}
+// Spoolman integration: off by default; spoolman_base_url has no seeded row
+// (absence means "not configured", checked explicitly rather than defaulting to '').
+try {
+  db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('spoolman_enabled', 'false')").run();
 } catch (_) {}
 
 // Make jobs.gcode_id nullable so gcodes can be deleted after jobs have run

@@ -4,6 +4,7 @@ import { useToast } from '../useToast';
 import { useConfirm } from '../useConfirm';
 import { SUPPORTED_LANGUAGES } from '../i18n';
 import { useFormattingLocale } from '../useFormattingLocale';
+import { useFilamentLibrary } from '../useFilamentLibrary';
 
 function LanguageSwitcher() {
   const { t, i18n } = useTranslation();
@@ -72,16 +73,33 @@ export default function Settings() {
   // Add single printer
   // Printer models — fetched from DB, used throughout this page
   const [allModels, setAllModels] = useState([]);
-  const [filamentTypes, setFilamentTypes] = useState([]);   // [{id, name}]
-  const [filamentColors, setFilamentColors] = useState([]); // [{id, name, hex_color}]
+  const { filamentTypes, filamentColors, librarySource, refetchFilamentLibrary } = useFilamentLibrary();
   const [allGroups, setAllGroups] = useState([]);           // [{name, created_at}]
   const fetchModels = useCallback(() => {
     fetch('/api/models').then(r => r.json()).then(setAllModels).catch(() => {});
-    fetch('/api/filaments/types').then(r => r.json()).then(setFilamentTypes).catch(() => {});
-    fetch('/api/filaments/colors').then(r => r.json()).then(setFilamentColors).catch(() => {});
     fetch('/api/groups').then(r => r.json()).then(setAllGroups).catch(() => {});
   }, []);
   useEffect(() => { fetchModels(); }, [fetchModels]);
+
+  // Read-only Spoolman filament display, grouped vendor -> filament, used only when
+  // librarySource === 'spoolman' (the Filament Library section hides its manual CRUD
+  // forms in that mode; see docs/spoolman.md). Exposed as a callback (not just an
+  // effect) because the effect's [librarySource] dependency only fires on the
+  // local<->spoolman transition: saving a corrected base URL while already enabled
+  // never changes librarySource, so without an explicit call here the read-only
+  // table stayed stuck on whatever it last fetched (empty, if the URL was wrong at
+  // the time) until a full page reload remounted the effect.
+  const [spoolmanFilaments, setSpoolmanFilaments] = useState([]);
+  const refreshSpoolmanFilamentsDisplay = useCallback(() => {
+    fetch('/api/spoolman/filaments')
+      .then(r => (r.ok ? r.json() : []))
+      .then(setSpoolmanFilaments)
+      .catch(() => setSpoolmanFilaments([]));
+  }, []);
+  useEffect(() => {
+    if (librarySource !== 'spoolman') return;
+    refreshSpoolmanFilamentsDisplay();
+  }, [librarySource, refreshSpoolmanFilamentsDisplay]);
 
   // Filament Library management
   const [typeForm, setTypeForm] = useState({ name: '' });
@@ -100,7 +118,7 @@ export default function Settings() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t('settings.failedToAddType'));
       setTypeForm({ name: '' });
-      fetchModels();
+      refetchFilamentLibrary();
       showToast(t('settings.filamentTypeAddedToast'));
     } catch (err) {
       setTypeFormError(err.message);
@@ -113,7 +131,7 @@ export default function Settings() {
       const res = await fetch(`/api/filaments/types/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t('settings.failedToDelete'));
-      fetchModels();
+      refetchFilamentLibrary();
       showToast(t('settings.itemRemovedToast', { name }));
     } catch (err) {
       setTypeDeleteError(prev => ({ ...prev, [id]: err.message }));
@@ -140,7 +158,7 @@ export default function Settings() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t('settings.failedToAddColor'));
       setColorForm({ type_id: '', name: '', hex_color: '' });
-      fetchModels();
+      refetchFilamentLibrary();
       showToast(t('settings.filamentColorAddedToast'));
     } catch (err) {
       setColorFormError(err.message);
@@ -153,7 +171,7 @@ export default function Settings() {
       const res = await fetch(`/api/filaments/colors/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t('settings.failedToDelete'));
-      fetchModels();
+      refetchFilamentLibrary();
       showToast(t('settings.itemRemovedToast', { name }));
     } catch (err) {
       setColorDeleteError(prev => ({ ...prev, [id]: err.message }));
@@ -291,15 +309,34 @@ export default function Settings() {
   const [farmName, setFarmName] = useState('');
   const [farmNameError, setFarmNameError] = useState(null);
 
+  // Spoolman integration: off by default, gated behind an enable toggle + base URL
+  const [spoolmanEnabled, setSpoolmanEnabled] = useState(false);
+  const [spoolmanBaseUrl, setSpoolmanBaseUrl] = useState('');
+  const [spoolmanError, setSpoolmanError] = useState(null);
+  const [spoolmanStatus, setSpoolmanStatus] = useState(null);
+
+  function fetchSpoolmanStatus() {
+    fetch('/api/spoolman/status')
+      .then(r => r.json())
+      .then(setSpoolmanStatus)
+      .catch(() => {});
+  }
+
   useEffect(() => {
     fetch('/api/settings')
       .then(r => r.json())
       .then(data => {
         if (data.dispatch_batch_size) setBatchSize(data.dispatch_batch_size);
         if (data.farm_name) setFarmName(data.farm_name);
+        setSpoolmanEnabled(data.spoolman_enabled === 'true');
+        if (data.spoolman_base_url) setSpoolmanBaseUrl(data.spoolman_base_url);
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (spoolmanEnabled) fetchSpoolmanStatus();
+  }, [spoolmanEnabled]);
 
   async function handleSaveBatchSize() {
     setBatchSizeError(null);
@@ -331,6 +368,47 @@ export default function Settings() {
       showToast(t('settings.farmNameSavedToast'));
     } catch (err) {
       setFarmNameError(err.message);
+    }
+  }
+
+  async function handleToggleSpoolmanEnabled(nextEnabled) {
+    setSpoolmanError(null);
+    try {
+      const res = await fetch('/api/settings/spoolman_enabled', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: nextEnabled ? 'true' : 'false' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || t('settings.saveFailedGeneric'));
+      setSpoolmanEnabled(nextEnabled);
+      if (nextEnabled) fetchSpoolmanStatus();
+      else setSpoolmanStatus(null);
+      refetchFilamentLibrary();
+      if (nextEnabled) refreshSpoolmanFilamentsDisplay();
+    } catch (err) {
+      setSpoolmanError(err.message);
+    }
+  }
+
+  async function handleSaveSpoolmanBaseUrl() {
+    setSpoolmanError(null);
+    try {
+      const res = await fetch('/api/settings/spoolman_base_url', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: spoolmanBaseUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || t('settings.saveFailedGeneric'));
+      showToast(t('settings.spoolmanSavedToast'));
+      if (spoolmanEnabled) {
+        fetchSpoolmanStatus();
+        refetchFilamentLibrary();
+        refreshSpoolmanFilamentsDisplay();
+      }
+    } catch (err) {
+      setSpoolmanError(err.message);
     }
   }
 
@@ -390,12 +468,16 @@ export default function Settings() {
       // Restore replaces printer_models/groups/filament library/settings wholesale:
       // refresh this page's state (and the sidebar's farm name) instead of requiring a reload.
       fetchModels();
+      refetchFilamentLibrary();
       fetch('/api/settings')
         .then(r => r.json())
         .then(settingsData => {
           if (settingsData.dispatch_batch_size) setBatchSize(settingsData.dispatch_batch_size);
           setFarmName(settingsData.farm_name || '');
           window.dispatchEvent(new CustomEvent('farmNameChanged', { detail: settingsData.farm_name || '' }));
+          setSpoolmanEnabled(settingsData.spoolman_enabled === 'true');
+          setSpoolmanBaseUrl(settingsData.spoolman_base_url || '');
+          if (settingsData.spoolman_enabled === 'true') refreshSpoolmanFilamentsDisplay();
         })
         .catch(() => {});
     } catch (err) {
@@ -678,6 +760,31 @@ export default function Settings() {
           {t('settings.filamentLibraryHint')}
         </p>
 
+        {librarySource === 'spoolman' && (
+          <div>
+            <p style={{ color: '#94a3b8', fontSize: 13, marginBottom: 12 }}>
+              {t('settings.spoolmanLibraryManagedHint')}{' '}
+              <a
+                href={spoolmanBaseUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: '#3b82f6', textDecoration: 'none' }}
+              >
+                {t('settings.spoolmanManageLink')} ↗
+              </a>
+            </p>
+            {spoolmanFilaments.length === 0 ? (
+              <p style={{ color: '#475569', fontSize: 13 }}>{t('settings.spoolmanLibraryEmptyHint')}</p>
+            ) : (
+              <p style={{ color: '#475569', fontSize: 13 }}>
+                {t('settings.spoolmanLibrarySummary', { count: spoolmanFilaments.length })}
+              </p>
+            )}
+          </div>
+        )}
+
+        {librarySource !== 'spoolman' && (
+        <>
         {/* Filament Types */}
         <h3 style={{ fontSize: 14, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>{t('settings.typesHeading')}</h3>
         {filamentTypes.length > 0 && (
@@ -827,6 +934,48 @@ export default function Settings() {
           </button>
         </form>
         {colorFormError && <div style={{ marginTop: 8, color: '#fca5a5', fontSize: 13 }}>{colorFormError}</div>}
+        </>
+        )}
+      </section>
+
+      {/* Spoolman Integration */}
+      <section style={{ background: '#1e2433', borderRadius: 10, padding: 20, marginBottom: 24, maxWidth: 640 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{t('settings.spoolmanTitle')}</h2>
+        <p style={{ color: '#64748b', fontSize: 13, marginBottom: 16 }}>
+          {t('settings.spoolmanHint')}
+        </p>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 16, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={spoolmanEnabled}
+            onChange={e => handleToggleSpoolmanEnabled(e.target.checked)}
+          />
+          {t('settings.spoolmanEnabledLabel')}
+        </label>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            value={spoolmanBaseUrl}
+            onChange={e => setSpoolmanBaseUrl(e.target.value)}
+            placeholder={t('settings.spoolmanBaseUrlExample')}
+            style={{ ...inputStyle, width: 320 }}
+          />
+          <button
+            onClick={handleSaveSpoolmanBaseUrl}
+            style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+          >
+            {t('common.save')}
+          </button>
+        </div>
+        {spoolmanError && (
+          <div style={{ marginTop: 10, color: '#fca5a5', fontSize: 13 }}>{spoolmanError}</div>
+        )}
+        {spoolmanEnabled && spoolmanStatus && (
+          <div style={{ marginTop: 10, fontSize: 13, color: spoolmanStatus.reachable ? '#4ade80' : '#fca5a5' }}>
+            {spoolmanStatus.reachable
+              ? t('settings.spoolmanConnected', { url: spoolmanStatus.base_url })
+              : t('settings.spoolmanUnreachable', { error: spoolmanStatus.error || spoolmanStatus.base_url })}
+          </div>
+        )}
       </section>
 
       {/* Add Single Printer */}
@@ -941,31 +1090,40 @@ export default function Settings() {
                 {allGroups.map(g => <option key={g.name} value={g.name} />)}
               </datalist>
             </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>{t('settings.loadedMaterialLabel')}</label>
-              <select
-                value={addForm.loaded_material}
-                onChange={e => setAddForm(p => ({ ...p, loaded_material: e.target.value, loaded_color: '' }))}
-                style={inputStyle}
-              >
-                <option value="">{t('common.noneOption')}</option>
-                {filamentTypes.map(ft => <option key={ft.id} value={ft.name}>{ft.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>{t('settings.loadedColorLabel')}</label>
-              <select
-                value={addForm.loaded_color}
-                onChange={e => setAddForm(p => ({ ...p, loaded_color: e.target.value }))}
-                disabled={!addForm.loaded_material}
-                style={inputStyle}
-              >
-                <option value="">{t('common.noneOption')}</option>
-                {filamentColors
-                  .filter(c => c.type_name === addForm.loaded_material)
-                  .map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-              </select>
-            </div>
+            {spoolmanEnabled ? (
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>{t('settings.loadedMaterialLabel')}</label>
+                <p style={{ color: '#475569', fontSize: 12, margin: 0 }}>{t('settings.spoolmanBindAfterAddHint')}</p>
+              </div>
+            ) : (
+              <>
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>{t('settings.loadedMaterialLabel')}</label>
+                  <select
+                    value={addForm.loaded_material}
+                    onChange={e => setAddForm(p => ({ ...p, loaded_material: e.target.value, loaded_color: '' }))}
+                    style={inputStyle}
+                  >
+                    <option value="">{t('common.noneOption')}</option>
+                    {filamentTypes.map(ft => <option key={ft.id} value={ft.name}>{ft.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>{t('settings.loadedColorLabel')}</label>
+                  <select
+                    value={addForm.loaded_color}
+                    onChange={e => setAddForm(p => ({ ...p, loaded_color: e.target.value }))}
+                    disabled={!addForm.loaded_material}
+                    style={inputStyle}
+                  >
+                    <option value="">{t('common.noneOption')}</option>
+                    {filamentColors
+                      .filter(c => c.type_name === addForm.loaded_material)
+                      .map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                  </select>
+                </div>
+              </>
+            )}
           </div>
           <button
             type="submit"

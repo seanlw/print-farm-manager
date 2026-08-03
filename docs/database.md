@@ -37,7 +37,9 @@ CREATE TABLE IF NOT EXISTS printers (
   job_name            TEXT,                      -- filename of current print job (PRINTING only)
   job_progress        REAL,                      -- 0–100 from PrusaLink (PRINTING only)
   job_time_remaining  INTEGER,                   -- seconds remaining (PRINTING only)
-  created_at          INTEGER NOT NULL           -- Unix epoch ms
+  created_at          INTEGER NOT NULL,          -- Unix epoch ms
+  spoolman_spool_id      INTEGER,                -- bound Spoolman spool id (see docs/spoolman.md); NULL = unbound
+  spoolman_report_usage  INTEGER DEFAULT 0        -- 1 = report print usage to Spoolman on completion (opt-in, avoids double-counting on printers that already report natively)
 );
 ```
 
@@ -164,11 +166,13 @@ CREATE TABLE IF NOT EXISTS jobs (
                    -- queued | uploading | printing | finished | failed | cancelled
   started_at       INTEGER,
   finished_at      INTEGER,
-  created_at       INTEGER NOT NULL
+  created_at       INTEGER NOT NULL,
+  spoolman_spool_id     INTEGER,  -- snapshot of printers.spoolman_spool_id at dispatch time (see docs/spoolman.md)
+  spoolman_reported_at  INTEGER   -- epoch ms; set once usage has been reported to Spoolman for this job, idempotency guard
 );
 ```
 
-`parts_per_plate` is snapshotted at dispatch time so changing the G-code record after dispatch doesn't retroactively affect in-flight jobs.
+`parts_per_plate` is snapshotted at dispatch time so changing the G-code record after dispatch doesn't retroactively affect in-flight jobs. `spoolman_spool_id` is snapshotted the same way, for the same reason.
 
 ### printer_events
 

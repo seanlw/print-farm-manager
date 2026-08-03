@@ -4,6 +4,7 @@ const path = require('path');
 const { getDriver } = require('./drivers');
 const notifications = require('./notifications');
 const events = require('./events');
+const spoolman = require('./integrations/spoolman');
 
 const GCODE_DIR = path.join(__dirname, 'gcode');
 
@@ -347,10 +348,13 @@ class JobScheduler extends EventEmitter {
       // Synchronously insert a job as 'uploading' — this acts as a dispatch lock
       // so concurrent printerIdle events for printers of the same model don't
       // over-dispatch the same Part.
+      // spoolman_spool_id is snapshotted from the printer at reservation time, not looked
+      // up live later: whichever spool was bound when this job was dispatched is the one
+      // that gets charged, even if the operator rebinds mid-print (see docs/spoolman.md).
       const jobRow = this.db.prepare(`
-        INSERT INTO jobs (part_id, printer_id, gcode_id, parts_per_plate, status, created_at)
-        VALUES (?, ?, ?, ?, 'uploading', ?)
-      `).run(candidate.part_id, printer.id, candidate.gcode_id, candidate.parts_per_plate, Date.now());
+        INSERT INTO jobs (part_id, printer_id, gcode_id, parts_per_plate, status, created_at, spoolman_spool_id)
+        VALUES (?, ?, ?, ?, 'uploading', ?, ?)
+      `).run(candidate.part_id, printer.id, candidate.gcode_id, candidate.parts_per_plate, Date.now(), printer.spoolman_spool_id ?? null);
       jobId = jobRow.lastInsertRowid;
 
       // Ceiling check: are the parts already in progress enough to cover what's needed?
@@ -539,6 +543,13 @@ class JobScheduler extends EventEmitter {
     this.db.prepare(`
       UPDATE parts SET completed_qty = completed_qty + ?, updated_at = ? WHERE id = ?
     `).run(job.parts_per_plate, now, job.part_id);
+
+    // Best-effort side effect, strictly after the credit above and never affecting it.
+    // reportJobUsage never throws, but this is a background (non-request) code path, so
+    // .catch is cheap insurance against the process-level unhandledRejection handler.
+    spoolman.reportJobUsage(this.db, job.id).catch((err) =>
+      console.warn(`[scheduler] Spoolman usage report failed for job ${job.id}:`, err)
+    );
 
     const part = this.db.prepare('SELECT * FROM parts WHERE id = ?').get(job.part_id);
 

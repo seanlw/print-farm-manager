@@ -462,7 +462,8 @@ describe('_sweepInBatches: ceiling interaction through the real wave loop', () =
         part_id INTEGER NOT NULL, printer_id INTEGER NOT NULL,
         gcode_id INTEGER, parts_per_plate INTEGER NOT NULL,
         status TEXT DEFAULT 'queued',
-        started_at INTEGER, finished_at INTEGER, created_at INTEGER NOT NULL
+        started_at INTEGER, finished_at INTEGER, created_at INTEGER NOT NULL,
+        spoolman_spool_id INTEGER
       );
     `);
     return db;

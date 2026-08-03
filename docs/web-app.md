@@ -214,7 +214,7 @@ Responsive grid of decommissioned printers — printers that have been pulled fr
 5. Clicking Save calls `POST /api/printers` with the operator-selected model
 6. Saved rows are removed from the flagged list and the imported count increments
 
-**Section order** (tuned for first-run flow): Server Alerts → Printer Models → Groups → Filament Library → Add Printer → CSV Import → Farm Name → Language → Dispatch Settings → Farm Backup → Polling info. Models, Groups, and Filaments come first because the Add Printer form depends on them.
+**Section order** (tuned for first-run flow): Server Alerts → Printer Models → Groups → Filament Library → Spoolman Integration → Add Printer → CSV Import → Farm Name → Language → Dispatch Settings → Farm Backup → Polling info. Models, Groups, and Filaments come first because the Add Printer form depends on them; Spoolman Integration sits directly after Filament Library since it's an alternative source for the same data (see [spoolman.md](spoolman.md)).
 
 **Groups section:** lists every registered group (`GET /api/groups`) with a Delete button per row and a name-only add form (`POST /api/groups`). Modeled on the Printer Models section, minus the type/color hierarchy Filament Library has. Deleting a group is blocked with an inline error naming the printer/G-code/project count still referencing it (`DELETE /api/groups/:name`, `409`). A group doesn't have to be created here first: typing a new name on a printer (Add Printer form, Printers bulk-edit, PrinterDetail, or CSV import) registers it automatically; this section exists for pre-creating a group before any printer uses it, and for cleanup.
 

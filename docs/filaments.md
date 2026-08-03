@@ -77,4 +77,17 @@ The **Filament Library** section in Settings has two sub-sections:
 
 ## Client usage
 
-All client pages that show material/color pickers (Settings add-printer form, Printers bulk edit, PrinterDetail edit form, Projects G-code upload and edit) fetch from `/api/filaments/types` and `/api/filaments/colors` and render `<select>` dropdowns rather than free-text `<input>` elements.
+All client pages that show material/color pickers (Settings add-printer form, Printers bulk edit, PrinterDetail edit form, Projects G-code upload and edit) source their options through the shared `useFilamentLibrary()` hook (`client/src/useFilamentLibrary.js`) rather than fetching `/api/filaments/types`/`/api/filaments/colors` directly, and render `<select>` dropdowns rather than free-text `<input>` elements.
+
+## Spoolman mode
+
+When the [Spoolman integration](spoolman.md) is enabled, `useFilamentLibrary()` sources every picker's options from Spoolman's live filament list instead of this page's manual tables, and the Filament Library section in Settings becomes read-only (the local `filament_types`/`filament_colors` tables and their CRUD endpoints are untouched underneath; disabling the integration instantly restores manual editing). This is a full mode switch, not a per-field toggle: while enabled, every picker on the farm reads from Spoolman, none from the local library.
+
+Two differences to know about while in this mode:
+
+- **Color values are the Spoolman filament's name, not a color name or a hex code.** Spoolman has no separate "color name" concept, so the picker uses `Filament.name` (e.g. `"Prusament PETG Signal Red"`) as both the option's label and its value; that string is what's actually stored as `loaded_color`/`required_color`. A raw hex code would be legible in neither the picker nor the "Loaded: PETG · ..." display, so it's never used as the value; `Filament.color_hex` is still surfaced elsewhere purely for reference (a swatch), never as a matching value. This is also exactly what [loaded-spool binding](spoolman.md#loaded-spool-binding) writes, so the two stay in lockstep.
+- **Matching stays case-sensitive plain-string equality**, unchanged in the scheduler. A `required_color` typed by hand under Spoolman mode must match the picker's filament-name value exactly, including case.
+
+Multi-color filaments (Spoolman's `multi_color_hexes`, used when `color_hex` is null) are not supported by any picker; such a filament shows up as a type with no selectable color.
+
+**Printer-level pickers are further restricted.** `loaded_material`/`loaded_color` represent what's physically on a printer, so while Spoolman is enabled those two fields can only be set by [binding a spool](spoolman.md#loaded-spool-binding) via PrinterDetail: the Add Printer form (Settings) and the Printers page's bulk-edit bar drop their Material/Color controls entirely, and PrinterDetail's own edit form renders them read-only. This restriction does not apply to `required_material`/`required_color` on G-codes and projects (Projects page): those remain free `<select>` pickers sourced from Spoolman's filament list, since a G-code requirement is a matching criterion, not a physical spool binding.

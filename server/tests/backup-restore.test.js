@@ -49,7 +49,9 @@ beforeEach(() => {
       job_time_remaining  INTEGER,
       serial_number       TEXT DEFAULT '',
       loaded_material     TEXT,
-      loaded_color        TEXT
+      loaded_color        TEXT,
+      spoolman_spool_id   INTEGER,
+      spoolman_report_usage INTEGER DEFAULT 0
     );
     CREATE TABLE projects (
       id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,15 +97,17 @@ beforeEach(() => {
       filament_used_mm    REAL
     );
     CREATE TABLE jobs (
-      id               INTEGER PRIMARY KEY AUTOINCREMENT,
-      part_id          INTEGER NOT NULL REFERENCES parts(id),
-      printer_id       INTEGER NOT NULL REFERENCES printers(id),
-      gcode_id         INTEGER REFERENCES gcodes(id),
-      parts_per_plate  INTEGER NOT NULL,
-      status           TEXT DEFAULT 'queued',
-      started_at       INTEGER,
-      finished_at      INTEGER,
-      created_at       INTEGER NOT NULL
+      id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+      part_id                INTEGER NOT NULL REFERENCES parts(id),
+      printer_id             INTEGER NOT NULL REFERENCES printers(id),
+      gcode_id               INTEGER REFERENCES gcodes(id),
+      parts_per_plate        INTEGER NOT NULL,
+      status                 TEXT DEFAULT 'queued',
+      started_at             INTEGER,
+      finished_at            INTEGER,
+      created_at             INTEGER NOT NULL,
+      spoolman_spool_id      INTEGER,
+      spoolman_reported_at   INTEGER
     );
     CREATE TABLE printer_events (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,10 +144,10 @@ beforeEach(() => {
   db.prepare(`
     INSERT INTO printers
       (name, ip, api_key, group_name, type, model, status, is_held, is_active, created_at,
-       serial_number, loaded_material, loaded_color)
+       serial_number, loaded_material, loaded_color, spoolman_spool_id, spoolman_report_usage)
     VALUES
       ('Bambu_01', '192.168.1.50', 'ac1B2c', 'Bambu Farm', 'bambu', 'x1c', 'IDLE', 0, 1, ?,
-       '01S00A123456789', 'PLA', 'Galaxy Black')
+       '01S00A123456789', 'PLA', 'Galaxy Black', 7, 1)
   `).run(now);
 
   db.prepare(`
@@ -165,6 +169,14 @@ beforeEach(() => {
       (1, 'x1c', 'part.gcode', 'part_stub.gcode', 4, 3600, ?,
        2, 45.5, '["Bambu Farm"]', 'PETG', 'Red', 123456, 45.2, 15230.5)
   `).run(now);
+
+  db.prepare(`
+    INSERT INTO jobs
+      (part_id, printer_id, gcode_id, parts_per_plate, status, started_at, finished_at, created_at,
+       spoolman_spool_id, spoolman_reported_at)
+    VALUES
+      (1, 1, 1, 4, 'finished', ?, ?, ?, 99, ?)
+  `).run(now - 3600_000, now, now - 3600_000, now);
 
   // Two types/colors (not one) so a restore that gets the filament_colors -> filament_types
   // FK order wrong, or maps a color to the wrong type, doesn't slip through by coincidence.
@@ -202,6 +214,8 @@ describe('Backup export/restore — column round-trip regression', () => {
       serial_number: '01S00A123456789',
       loaded_material: 'PLA',
       loaded_color: 'Galaxy Black',
+      spoolman_spool_id: 7,
+      spoolman_report_usage: 1,
     });
     expect(res.body.projects[0]).toMatchObject({
       required_material: 'PETG',
@@ -222,6 +236,10 @@ describe('Backup export/restore — column round-trip regression', () => {
       filament_used_grams: 45.2,
       filament_used_mm: 15230.5,
     });
+    expect(res.body.jobs[0]).toMatchObject({
+      spoolman_spool_id: 99,
+    });
+    expect(res.body.jobs[0].spoolman_reported_at).toEqual(expect.any(Number));
   });
 
   test('restore preserves every migrated column, not just the base schema', async () => {
@@ -232,10 +250,11 @@ describe('Backup export/restore — column round-trip regression', () => {
     try {
       // Wipe the columns under test so a false-positive (restore is a no-op / DB untouched)
       // can't slip through — restore must be what puts these values back.
-      db.prepare("UPDATE printers SET serial_number = '', loaded_material = NULL, loaded_color = NULL").run();
+      db.prepare("UPDATE printers SET serial_number = '', loaded_material = NULL, loaded_color = NULL, spoolman_spool_id = NULL, spoolman_report_usage = 0").run();
       db.prepare("UPDATE projects SET required_material = NULL, required_color = NULL, allowed_groups = NULL").run();
       db.prepare("UPDATE parts SET print_time_seconds = NULL, material_grams = NULL").run();
       db.prepare("UPDATE gcodes SET ams_slot = NULL, material_grams = NULL, allowed_groups = NULL, required_material = NULL, required_color = NULL, file_size = NULL, filament_used_grams = NULL, filament_used_mm = NULL").run();
+      db.prepare("UPDATE jobs SET spoolman_spool_id = NULL, spoolman_reported_at = NULL").run();
 
       const restoreRes = await request(app)
         .post('/api/backup/restore')
@@ -248,6 +267,8 @@ describe('Backup export/restore — column round-trip regression', () => {
       expect(printer.serial_number).toBe('01S00A123456789');
       expect(printer.loaded_material).toBe('PLA');
       expect(printer.loaded_color).toBe('Galaxy Black');
+      expect(printer.spoolman_spool_id).toBe(7);
+      expect(printer.spoolman_report_usage).toBe(1);
 
       const project = db.prepare('SELECT * FROM projects WHERE id = 1').get();
       expect(project.required_material).toBe('PETG');
@@ -267,6 +288,10 @@ describe('Backup export/restore — column round-trip regression', () => {
       expect(gcode.file_size).toBe(123456);
       expect(gcode.filament_used_grams).toBe(45.2);
       expect(gcode.filament_used_mm).toBe(15230.5);
+
+      const job = db.prepare('SELECT * FROM jobs WHERE id = 1').get();
+      expect(job.spoolman_spool_id).toBe(99);
+      expect(job.spoolman_reported_at).toEqual(expect.any(Number));
     } finally {
       fs.unlinkSync(backupFile);
     }

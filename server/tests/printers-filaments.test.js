@@ -1,11 +1,15 @@
 // Tests for:
 //   GET /api/printers/filaments
-//   PUT /api/printers/:id — loaded_material / loaded_color fields
+//   PUT /api/printers/:id: loaded_material / loaded_color / spoolman_report_usage fields
 //   Auto-registration into printer_groups on create/update
+//   POST /api/printers/:id/spoolman-bind, spoolman-unbind, spoolman-sync
+
+jest.mock('../integrations/spoolman');
 
 const request  = require('supertest');
 const express  = require('express');
 const Database = require('better-sqlite3');
+const spoolman = require('../integrations/spoolman');
 
 let db;
 let app;
@@ -30,6 +34,8 @@ beforeAll(() => {
       serial_number     TEXT DEFAULT '',
       loaded_material   TEXT,
       loaded_color      TEXT,
+      spoolman_spool_id INTEGER,
+      spoolman_report_usage INTEGER DEFAULT 0,
       created_at        INTEGER NOT NULL
     );
     CREATE TABLE printer_events (
@@ -256,5 +262,138 @@ describe('printer_groups auto-registration', () => {
     // this is the exact bug the registry exists to fix.
     expect(db.prepare('SELECT COUNT(*) AS c FROM printers WHERE group_name = ?').get('Rack Solo').c).toBe(0);
     expect(db.prepare('SELECT * FROM printer_groups WHERE name = ?').get('Rack Solo')).toBeTruthy();
+  });
+});
+
+// ── PUT /api/printers/:id: spoolman_report_usage ──────────────────────────────
+
+describe('PUT /api/printers/:id: spoolman_report_usage', () => {
+  test('sets and clears the opt-in flag independently of other fields', async () => {
+    const row = db.prepare(
+      "INSERT INTO printers (name, ip, api_key, model, is_active, created_at) VALUES ('ReportFlagPrinter', '10.0.0.20', '', 'mk4s', 1, ?)"
+    ).run(Date.now());
+    const printerId = row.lastInsertRowid;
+
+    let res = await request(app).put(`/api/printers/${printerId}`).send({ spoolman_report_usage: true });
+    expect(res.status).toBe(200);
+    expect(res.body.spoolman_report_usage).toBe(1);
+
+    res = await request(app).put(`/api/printers/${printerId}`).send({ serial_number: 'SN-1' });
+    expect(res.status).toBe(200);
+    expect(res.body.spoolman_report_usage).toBe(1); // unchanged by an unrelated update
+
+    res = await request(app).put(`/api/printers/${printerId}`).send({ spoolman_report_usage: false });
+    expect(res.status).toBe(200);
+    expect(res.body.spoolman_report_usage).toBe(0);
+  });
+});
+
+// ── POST /api/printers/:id/spoolman-bind, spoolman-unbind, spoolman-sync ──────
+
+describe('Spoolman spool binding', () => {
+  let printerId;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    const row = db.prepare(
+      "INSERT INTO printers (name, ip, api_key, model, is_active, created_at) VALUES (?, '10.0.0.30', '', 'mk4s', 1, ?)"
+    ).run(`BindPrinter_${Date.now()}_${Math.random()}`, Date.now());
+    printerId = row.lastInsertRowid;
+  });
+
+  const fakeSpool = {
+    id: 42,
+    filament: { material: 'PLA', color_hex: '1a1a1a', name: 'Prusament PLA Galaxy Black' },
+  };
+
+  describe('POST /:id/spoolman-bind', () => {
+    test('400s when the integration is not enabled', async () => {
+      spoolman.isEnabled.mockReturnValue(false);
+      const res = await request(app).post(`/api/printers/${printerId}/spoolman-bind`).send({ spool_id: 42 });
+      expect(res.status).toBe(400);
+      expect(spoolman.getSpool).not.toHaveBeenCalled();
+    });
+
+    test('400s when spool_id is missing', async () => {
+      spoolman.isEnabled.mockReturnValue(true);
+      const res = await request(app).post(`/api/printers/${printerId}/spoolman-bind`).send({});
+      expect(res.status).toBe(400);
+    });
+
+    test('binds the spool and snapshots material/color, color as the filament name not the hex', async () => {
+      spoolman.isEnabled.mockReturnValue(true);
+      spoolman.getSpool.mockResolvedValue(fakeSpool);
+
+      const res = await request(app).post(`/api/printers/${printerId}/spoolman-bind`).send({ spool_id: 42 });
+      expect(res.status).toBe(200);
+      expect(res.body.spoolman_spool_id).toBe(42);
+      expect(res.body.loaded_material).toBe('PLA');
+      expect(res.body.loaded_color).toBe('Prusament PLA Galaxy Black');
+      expect(spoolman.getSpool).toHaveBeenCalledWith(db, 42);
+    });
+
+    test('does not set a color when the filament has no color_hex (multi-color, unsupported)', async () => {
+      spoolman.isEnabled.mockReturnValue(true);
+      spoolman.getSpool.mockResolvedValue({ id: 43, filament: { material: 'PLA', color_hex: null, name: 'Multi-Color PLA' } });
+
+      const res = await request(app).post(`/api/printers/${printerId}/spoolman-bind`).send({ spool_id: 43 });
+      expect(res.status).toBe(200);
+      expect(res.body.loaded_material).toBe('PLA');
+      expect(res.body.loaded_color).toBeNull();
+    });
+
+    test('404s when Spoolman reports the spool missing', async () => {
+      spoolman.isEnabled.mockReturnValue(true);
+      spoolman.getSpool.mockRejectedValue({ message: 'Not Found', response: { status: 404 } });
+      const res = await request(app).post(`/api/printers/${printerId}/spoolman-bind`).send({ spool_id: 999 });
+      expect(res.status).toBe(404);
+    });
+
+    test('502s when Spoolman is unreachable', async () => {
+      spoolman.isEnabled.mockReturnValue(true);
+      spoolman.getSpool.mockRejectedValue(new Error('connect ECONNREFUSED'));
+      const res = await request(app).post(`/api/printers/${printerId}/spoolman-bind`).send({ spool_id: 42 });
+      expect(res.status).toBe(502);
+    });
+  });
+
+  describe('POST /:id/spoolman-unbind', () => {
+    test('409s when the printer has no bound spool', async () => {
+      const res = await request(app).post(`/api/printers/${printerId}/spoolman-unbind`);
+      expect(res.status).toBe(409);
+    });
+
+    test('clears spoolman_spool_id but leaves the last-known material/color snapshot', async () => {
+      spoolman.isEnabled.mockReturnValue(true);
+      spoolman.getSpool.mockResolvedValue(fakeSpool);
+      await request(app).post(`/api/printers/${printerId}/spoolman-bind`).send({ spool_id: 42 });
+
+      const res = await request(app).post(`/api/printers/${printerId}/spoolman-unbind`);
+      expect(res.status).toBe(200);
+      expect(res.body.spoolman_spool_id).toBeNull();
+      expect(res.body.loaded_material).toBe('PLA');
+      expect(res.body.loaded_color).toBe('Prusament PLA Galaxy Black');
+    });
+  });
+
+  describe('POST /:id/spoolman-sync', () => {
+    test('409s when the printer has no bound spool', async () => {
+      const res = await request(app).post(`/api/printers/${printerId}/spoolman-sync`);
+      expect(res.status).toBe(409);
+    });
+
+    test('re-fetches the bound spool and re-snapshots material/color', async () => {
+      spoolman.isEnabled.mockReturnValue(true);
+      spoolman.getSpool.mockResolvedValue(fakeSpool);
+      await request(app).post(`/api/printers/${printerId}/spoolman-bind`).send({ spool_id: 42 });
+
+      spoolman.getSpool.mockResolvedValue({ id: 42, filament: { material: 'PETG', color_hex: 'ff0000', name: 'Prusament PETG Signal Red' } });
+      const res = await request(app).post(`/api/printers/${printerId}/spoolman-sync`);
+      expect(res.status).toBe(200);
+      expect(res.body.spoolman_spool_id).toBe(42);
+      expect(res.body.loaded_material).toBe('PETG');
+      expect(res.body.loaded_color).toBe('Prusament PETG Signal Red');
+      expect(spoolman.getSpool).toHaveBeenLastCalledWith(db, 42);
+    });
   });
 });

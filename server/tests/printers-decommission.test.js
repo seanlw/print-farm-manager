@@ -1,9 +1,18 @@
 // Tests for POST /api/printers/:id/mark-job-failure and POST /api/printers/:id/decommission
 // Uses an in-memory SQLite DB — no real printers or network calls needed.
 
+jest.mock('../integrations/spoolman', () => ({ reportJobUsage: jest.fn().mockResolvedValue({ ok: false, reason: 'disabled' }) }));
+
 const request  = require('supertest');
 const express  = require('express');
 const Database = require('better-sqlite3');
+const spoolman = require('../integrations/spoolman');
+const notifications = require('../notifications');
+
+afterEach(() => {
+  spoolman.reportJobUsage.mockClear();
+  spoolman.reportJobUsage.mockResolvedValue({ ok: false, reason: 'disabled' });
+});
 
 // ── In-memory DB setup ────────────────────────────────────────────────────────
 
@@ -60,15 +69,17 @@ beforeAll(() => {
       created_at      INTEGER NOT NULL
     );
     CREATE TABLE jobs (
-      id              INTEGER PRIMARY KEY AUTOINCREMENT,
-      part_id         INTEGER NOT NULL REFERENCES parts(id),
-      printer_id      INTEGER NOT NULL REFERENCES printers(id),
-      gcode_id        INTEGER NOT NULL REFERENCES gcodes(id),
-      parts_per_plate INTEGER NOT NULL,
-      status          TEXT DEFAULT 'queued',
-      started_at      INTEGER,
-      finished_at     INTEGER,
-      created_at      INTEGER NOT NULL
+      id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+      part_id                INTEGER NOT NULL REFERENCES parts(id),
+      printer_id             INTEGER NOT NULL REFERENCES printers(id),
+      gcode_id               INTEGER NOT NULL REFERENCES gcodes(id),
+      parts_per_plate        INTEGER NOT NULL,
+      status                 TEXT DEFAULT 'queued',
+      started_at             INTEGER,
+      finished_at            INTEGER,
+      created_at             INTEGER NOT NULL,
+      spoolman_spool_id      INTEGER,
+      spoolman_reported_at   INTEGER
     );
     CREATE TABLE printer_models (
       model_id  TEXT PRIMARY KEY,
@@ -269,6 +280,38 @@ describe('POST /api/printers/:id/mark-job-failure', () => {
     const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(printerId);
     expect(printer.is_active).toBe(0);
   });
+
+  test('adds a notification when a Spoolman-reported job is marked failed (not reversed)', async () => {
+    const projectId = seedProject();
+    const partId    = seedPart(projectId, 10, 4);
+    const gcodeId   = seedGcode(partId);
+    const printerId = seedPrinter({ name: `Printer_smreported_${Date.now()}` });
+    const jobId = seedJob(printerId, partId, gcodeId, 'finished', 4);
+    db.prepare('UPDATE jobs SET spoolman_spool_id = ?, spoolman_reported_at = ? WHERE id = ?')
+      .run(42, Date.now(), jobId);
+
+    const before = notifications.list().length;
+    await request(app).post(`/api/printers/${printerId}/mark-job-failure`);
+    const after = notifications.list();
+
+    expect(after.length).toBe(before + 1);
+    expect(after[0].message).toMatch(/spool #42/);
+    expect(after[0].message).toMatch(/not automatically restored/);
+  });
+
+  test('does not add a Spoolman notification when the job was never reported', async () => {
+    const projectId = seedProject();
+    const partId    = seedPart(projectId, 10, 4);
+    const gcodeId   = seedGcode(partId);
+    const printerId = seedPrinter({ name: `Printer_smnotreported_${Date.now()}` });
+    seedJob(printerId, partId, gcodeId, 'finished', 4); // spoolman_reported_at left NULL
+
+    const before = notifications.list().length;
+    await request(app).post(`/api/printers/${printerId}/mark-job-failure`);
+    const after = notifications.list();
+
+    expect(after.length).toBe(before);
+  });
 });
 
 // ── POST /api/printers/:id/decommission ───────────────────────────────────────
@@ -399,5 +442,59 @@ describe('POST /api/printers/:id/complete-and-decommission', () => {
 
     const part = db.prepare('SELECT completed_qty FROM parts WHERE id = ?').get(partId);
     expect(part.completed_qty).toBe(4);
+  });
+
+  test('missed-finish calls reportJobUsage with the credited job id', async () => {
+    const projectId = seedProject();
+    const partId    = seedPart(projectId, 10, 0);
+    const gcodeId   = seedGcode(partId);
+    const printerId = seedPrinter({ name: `Printer_cad_smcall_${Date.now()}`, status: 'IDLE' });
+    const jobId     = seedJob(printerId, partId, gcodeId, 'printing', 4);
+
+    await request(app).post(`/api/printers/${printerId}/complete-and-decommission`).send({});
+
+    expect(spoolman.reportJobUsage).toHaveBeenCalledWith(db, jobId);
+  });
+
+  test('includes spoolman_warning on an http-error, but still credits and decommissions', async () => {
+    spoolman.reportJobUsage.mockResolvedValueOnce({ ok: false, reason: 'http-error', error: 'connect ECONNREFUSED' });
+    const projectId = seedProject();
+    const partId    = seedPart(projectId, 10, 0);
+    const gcodeId   = seedGcode(partId);
+    const printerId = seedPrinter({ name: `Printer_cad_smhttp_${Date.now()}`, status: 'IDLE' });
+    seedJob(printerId, partId, gcodeId, 'printing', 4);
+
+    const res = await request(app).post(`/api/printers/${printerId}/complete-and-decommission`).send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.spoolman_warning).toMatch(/ECONNREFUSED/);
+    const part = db.prepare('SELECT completed_qty FROM parts WHERE id = ?').get(partId);
+    expect(part.completed_qty).toBe(4); // credit unaffected
+    const printer = db.prepare('SELECT is_active FROM printers WHERE id = ?').get(printerId);
+    expect(printer.is_active).toBe(0); // decommission unaffected
+  });
+
+  test('does not include spoolman_warning for an expected no-op reason', async () => {
+    const projectId = seedProject();
+    const partId    = seedPart(projectId, 10, 0);
+    const gcodeId   = seedGcode(partId);
+    const printerId = seedPrinter({ name: `Printer_cad_smnoop_${Date.now()}`, status: 'IDLE' });
+    seedJob(printerId, partId, gcodeId, 'printing', 4);
+
+    const res = await request(app).post(`/api/printers/${printerId}/complete-and-decommission`).send({});
+
+    expect(res.body.spoolman_warning).toBeUndefined();
+  });
+
+  test('normal-finish path (already credited) does not call reportJobUsage again', async () => {
+    const projectId = seedProject();
+    const partId    = seedPart(projectId, 10, 4);
+    const gcodeId   = seedGcode(partId);
+    const printerId = seedPrinter({ name: `Printer_cad_smnormal_${Date.now()}` });
+    seedJob(printerId, partId, gcodeId, 'finished', 4);
+
+    await request(app).post(`/api/printers/${printerId}/complete-and-decommission`).send({});
+
+    expect(spoolman.reportJobUsage).not.toHaveBeenCalled();
   });
 });

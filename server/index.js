@@ -21,6 +21,7 @@ const JobScheduler   = require('./scheduler');
 const notifications  = require('./notifications');
 const events         = require('./events');
 const backup         = require('./backup');
+const spoolmanIntegration = require('./integrations/spoolman');
 
 const printersRouter     = require('./routes/printers')(db);
 const jobsRouter         = require('./routes/jobs')(db);
@@ -31,6 +32,7 @@ const modelsRouter       = require('./routes/models')(db);
 const groupsRouter       = require('./routes/groups')(db);
 const filamentsRouter    = require('./routes/filaments')(db);
 const printerJobsRouter  = require('./routes/printer-jobs')(db);
+const spoolmanRouter     = require('./routes/spoolman')(db);
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -52,6 +54,7 @@ app.use('/api/settings',        settingsRouter);
 app.use('/api/models',          modelsRouter);
 app.use('/api/groups',          groupsRouter);
 app.use('/api/filaments',       filamentsRouter);
+app.use('/api/spoolman',        spoolmanRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -170,12 +173,15 @@ const server = app.listen(PORT, () => {
   // Operator clicking Set Ready is the explicit success confirmation. We credit qty now
   // (using confirmed_qty if provided, otherwise the full parts_per_plate) and mark the
   // job finished. No assumptions are made without operator input.
-  app.post('/api/printers/:id/set-ready', (req, res) => {
+  app.post('/api/printers/:id/set-ready', async (req, res) => {
     const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id);
     if (!printer) return res.status(404).json({ error: 'Printer not found' });
 
     const { confirmed_qty } = req.body || {};
     const now = Date.now();
+    // Set only when a Spoolman usage report genuinely failed to reach Spoolman (an http
+    // error): not-bound/opted-out/already-reported are expected silent no-ops, not warnings.
+    let spoolmanWarning = null;
 
     // Check for an uploading or printing job FIRST — they take priority over a stale
     // 'finished' job from a previous print cycle. Without this check, a printer that has
@@ -281,6 +287,9 @@ const server = app.listen(PORT, () => {
           UPDATE parts SET completed_qty = completed_qty + ?, updated_at = ? WHERE id = ?
         `).run(creditQty, now, activeJob.part_id);
 
+        const usageResult = await spoolmanIntegration.reportJobUsage(db, activeJob.id);
+        if (usageResult.reason === 'http-error') spoolmanWarning = `Spoolman usage report failed: ${usageResult.error}`;
+
         const part = db.prepare('SELECT * FROM parts WHERE id = ?').get(activeJob.part_id);
         const label = printingJob ? 'missed-finish' : activeJob.status === 'cancelled' ? 'cancelled-confirmed-good' : 'MQTT-recovered finish';
         console.log(`[server] ${printer.name} ${label} confirmed good — Part "${part.name}" ${part.completed_qty}/${part.target_qty}`);
@@ -317,6 +326,8 @@ const server = app.listen(PORT, () => {
               .run(now, now, uploadingJob.id);
             db.prepare("UPDATE parts SET completed_qty = completed_qty + ?, updated_at = ? WHERE id = ?")
               .run(creditQty, now, uploadingJob.part_id);
+            const uploadStalledUsageResult = await spoolmanIntegration.reportJobUsage(db, uploadingJob.id);
+            if (uploadStalledUsageResult.reason === 'http-error') spoolmanWarning = `Spoolman usage report failed: ${uploadStalledUsageResult.error}`;
             const part = db.prepare('SELECT * FROM parts WHERE id = ?').get(uploadingJob.part_id);
             console.log(`[server] ${printer.name} upload-stalled job ${uploadingJob.id} confirmed finished — Part "${part.name}" ${part.completed_qty}/${part.target_qty}`);
             if (part.completed_qty >= part.target_qty) {
@@ -346,7 +357,7 @@ const server = app.listen(PORT, () => {
     const updated = db.prepare('SELECT * FROM printers WHERE id = ?').get(printer.id);
     console.log(`[server] ${printer.name} set ready by operator — dispatching...`);
     scheduler.scheduleForPrinter(updated);
-    res.json(updated);
+    res.json(spoolmanWarning ? { ...updated, spoolman_warning: spoolmanWarning } : updated);
   });
 });
 

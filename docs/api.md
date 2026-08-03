@@ -100,7 +100,7 @@ Returns `201` with the created printer object. Returns `409` if `name` already e
 
 ### `PUT /api/printers/:id`
 
-Partial update — only fields provided are changed (uses `COALESCE`). All fields from POST are accepted, plus `is_held` (`0` or `1`).
+Partial update: only fields provided are changed (uses `COALESCE`). All fields from POST are accepted, plus `is_held` (`0` or `1`) and `spoolman_report_usage` (boolean; see [docs/spoolman.md](spoolman.md), the per-printer opt-in for usage reporting, independent of whether a spool is bound).
 
 Returns `404` if not found, `409` on name conflict.
 
@@ -138,7 +138,7 @@ If `confirmed_qty` is provided and differs from the `parts_per_plate` of the pri
 
 **OFFLINE-with-job exception:** if the printer's current status is `OFFLINE` and it has a `printing` job (no finished job), qty is not credited and the job is not marked finished. The printer is simply unheld and the job continues to its natural finish. This is the "Job OK" path from the Fleet UI — the operator is confirming the job is still running, not that it completed.
 
-Returns the updated printer object.
+If this request newly credits a job (the missed-finish paths, not the normal-finish delta path) and the [Spoolman integration](spoolman.md) is enabled and bound, usage is reported to Spoolman as part of the same request. Returns the updated printer object, plus `spoolman_warning` (string) only when that report genuinely failed to reach Spoolman: an expected no-op (not bound, opted out, already reported) is silent, not a warning.
 
 ### `POST /api/printers/:id/decommission`
 
@@ -153,7 +153,7 @@ Operator confirms the last print was successful, then takes the machine offline 
 
 Also drops any cached driver connection for the printer, same as decommission.
 
-Returns the updated printer object.
+Same Spoolman usage-reporting behavior as `set-ready` on the missed-finish path: returns the updated printer object, plus `spoolman_warning` only on a genuine reporting failure.
 
 ### `POST /api/printers/:id/recommission`
 
@@ -177,6 +177,8 @@ Marks the printer's most relevant active or recently-completed job as `failed`, 
 
 If no tracked job matches any of the above, the printer is still decommissioned — operator intent is always to take the machine offline.
 
+If the matched job already had its usage reported to Spoolman (`jobs.spoolman_reported_at` set), that report is **not** reversed: Spoolman's `/use` endpoint semantics for a negative amount aren't documented, so this deliberately doesn't guess. A notification is added instead telling the operator to adjust the spool's remaining weight manually in Spoolman if needed.
+
 Returns `{ "success": true, "job_id": N }` (or `job_id: null` when no job was found). Returns `404` only if the printer itself does not exist.
 
 ### `GET /api/printers/:id/linkable-jobs`
@@ -194,6 +196,26 @@ Manually associates a failed or stalled job with this printer — for record kee
 Sets `jobs.status` to `'printing'`, updates `jobs.printer_id` to this printer, sets `jobs.started_at` if not already set, and releases the printer's hold (`is_held = 0`).
 
 Returns `409` if the job is not in `failed` or `uploading` status. Returns `404` if the printer or job does not exist.
+
+### `POST /api/printers/:id/spoolman-bind`
+
+Binds a Spoolman spool to this printer and snapshots `loaded_material`/`loaded_color` from the spool's filament at bind time (not a live lookup, see [docs/spoolman.md](spoolman.md)). Requires the Spoolman integration to be enabled.
+
+**Body:** `{ "spool_id": 42 }`
+
+Returns the updated printer object. `400` if `spool_id` is missing or the integration is disabled, `404` if Spoolman reports the spool doesn't exist, `502` if Spoolman can't be reached.
+
+### `POST /api/printers/:id/spoolman-unbind`
+
+Clears `spoolman_spool_id` only: `loaded_material`/`loaded_color` keep their last-known snapshot, same as any other manual edit to those fields.
+
+Returns the updated printer object. `409` if the printer has no bound spool.
+
+### `POST /api/printers/:id/spoolman-sync`
+
+Re-fetches the currently bound spool from Spoolman and re-snapshots `loaded_material`/`loaded_color`. Manual only, not polled automatically.
+
+Returns the updated printer object. `409` if the printer has no bound spool, `400` if the integration is disabled, `404`/`502` per the bind endpoint.
 
 ### `GET /api/printers/:id/events`
 
@@ -591,8 +613,39 @@ Body: `{ "value": "..." }`. Allowed keys:
 |---|---|---|
 | `dispatch_batch_size` | integer 1-100 | How many printers the scheduler keeps uploading or printing at once (a concurrency target, not a fixed group size; it draws deeper into the ready queue to fill the target if some printers have no dispatchable candidate) |
 | `farm_name` | ≤ 40 chars | Sidebar branding (falls back to "Print Farm") |
+| `spoolman_enabled` | `"true"` or `"false"` | Turns the [Spoolman integration](spoolman.md) on or off. On the `false` → `true` transition, clears `loaded_material`/`loaded_color` on every printer with no bound spool (see spoolman.md) |
+| `spoolman_base_url` | `http://...` or `https://...`, ≤ 200 chars | Base URL of a self-hosted Spoolman instance |
 
 Returns `400` for unknown keys or failed validation.
+
+---
+
+## Spoolman
+
+Optional integration with a self-hosted Spoolman instance. See [docs/spoolman.md](spoolman.md) for the full design and current implementation status. Every endpoint below is mounted at `/api/spoolman`, returns `400` if `spoolman_enabled` is not `"true"` or no `spoolman_base_url` is configured, and returns `502` with the upstream error message if Spoolman itself can't be reached.
+
+### `GET /api/spoolman/status`
+
+```json
+{ "enabled": true, "base_url": "http://spoolman.local:7912", "reachable": true }
+```
+`reachable: false` includes an `error` field.
+
+### `GET /api/spoolman/vendors`
+
+Proxies Spoolman's `GET /api/v1/vendor`, response unmodified.
+
+### `GET /api/spoolman/filaments`
+
+Proxies Spoolman's `GET /api/v1/filament`, response unmodified.
+
+### `GET /api/spoolman/spools`
+
+Proxies Spoolman's `GET /api/v1/spool`. Query parameters are passed straight through to Spoolman (e.g. `?allow_archived=false`).
+
+### `GET /api/spoolman/spools/:id`
+
+Proxies Spoolman's `GET /api/v1/spool/:id`. `404` if Spoolman reports the spool doesn't exist.
 
 ---
 

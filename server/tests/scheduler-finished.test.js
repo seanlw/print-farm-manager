@@ -23,6 +23,12 @@ const { getDriver: mockGetDriver } = require('../drivers');
 // Suppress event logging side-effects
 jest.mock('../events', () => ({ insert: jest.fn() }));
 
+// Spoolman usage reporting is a background best-effort side effect: mocked here so
+// these tests can assert it's invoked (and that it never affects completed_qty)
+// without needing real settings/gcode rows for every existing test in this file.
+jest.mock('../integrations/spoolman', () => ({ reportJobUsage: jest.fn().mockResolvedValue({ ok: false, reason: 'disabled' }) }));
+const spoolman = require('../integrations/spoolman');
+
 afterEach(() => jest.clearAllMocks());
 
 // ── DB + scheduler factory ────────────────────────────────────────────────────
@@ -440,5 +446,65 @@ describe('_handleFinished — no job found', () => {
 
     const part = db.prepare('SELECT completed_qty FROM parts WHERE id = ?').get(partId);
     expect(part.completed_qty).toBe(5); // unchanged
+  });
+});
+
+// ── Spoolman usage reporting: side effect only ────────────────────────────────
+//
+// reportJobUsage must be invoked after the completed_qty credit, and its outcome
+// (success, failure, or rejection) must never change what gets credited: it is a
+// pure side effect appended after the real event, never a replacement for it.
+
+describe('_handleFinished: Spoolman usage reporting (side effect only)', () => {
+  test('calls reportJobUsage with the finished job id, after crediting completed_qty', () => {
+    const db        = makeDb();
+    const scheduler = makeScheduler(db);
+    const projectId = seedProject(db);
+    const partId    = seedPart(db, projectId, { completedQty: 0 });
+    const gcodeId   = seedGcode(db, partId);
+    const printerId = seedPrinter(db);
+    const jobId     = seedJob(db, printerId, partId, gcodeId, 'printing', { partsPerPlate: 4 });
+
+    scheduler._handleFinished(makePrinter(db, printerId));
+
+    expect(spoolman.reportJobUsage).toHaveBeenCalledWith(db, jobId);
+    // The credit already happened synchronously before reportJobUsage was even called.
+    const part = db.prepare('SELECT completed_qty FROM parts WHERE id = ?').get(partId);
+    expect(part.completed_qty).toBe(4);
+  });
+
+  test('completed_qty crediting is unaffected when the Spoolman report rejects', async () => {
+    spoolman.reportJobUsage.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+    const db        = makeDb();
+    const scheduler = makeScheduler(db);
+    const projectId = seedProject(db);
+    const partId    = seedPart(db, projectId, { completedQty: 2 });
+    const gcodeId   = seedGcode(db, partId);
+    const printerId = seedPrinter(db);
+    seedJob(db, printerId, partId, gcodeId, 'printing', { partsPerPlate: 4 });
+
+    scheduler._handleFinished(makePrinter(db, printerId));
+    // Let the rejected promise's .catch() handler run before asserting.
+    await new Promise(process.nextTick);
+
+    const part = db.prepare('SELECT completed_qty FROM parts WHERE id = ?').get(partId);
+    expect(part.completed_qty).toBe(6); // 2 + 4, identical to the disabled/success case
+  });
+
+  test('does not throw or block when reportJobUsage rejects', async () => {
+    spoolman.reportJobUsage.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+    const db        = makeDb();
+    const scheduler = makeScheduler(db);
+    const projectId = seedProject(db);
+    const partId    = seedPart(db, projectId);
+    const gcodeId   = seedGcode(db, partId);
+    const printerId = seedPrinter(db);
+    seedJob(db, printerId, partId, gcodeId, 'printing');
+
+    expect(() => scheduler._handleFinished(makePrinter(db, printerId))).not.toThrow();
+    await new Promise(process.nextTick);
+
+    const printer = db.prepare('SELECT is_held FROM printers WHERE id = ?').get(printerId);
+    expect(printer.is_held).toBe(1); // the rest of _handleFinished still ran normally
   });
 });

@@ -85,8 +85,8 @@ When the [Spoolman integration](spoolman.md) is enabled, `useFilamentLibrary()` 
 
 Two differences to know about while in this mode:
 
-- **Color values become hex, not names.** Spoolman has no separate "color name" concept, only a hex code (`Filament.color_hex`, stored without a leading `#`). The picker renders it with a leading `#` added, to match this table's own `hex_color` convention, and that hex string (e.g. `#1A1A1A`) becomes the actual `loaded_color`/`required_color` value stored on the printer or G-code, not a friendly name.
-- **Matching stays case-sensitive plain-string equality**, unchanged in the scheduler. A `required_color` typed by hand under Spoolman mode must match the picker's hex value exactly, including case.
+- **Color values are the Spoolman filament's name, not a color name or a hex code.** Spoolman has no separate "color name" concept, so the picker uses `Filament.name` (e.g. `"Prusament PETG Signal Red"`) as both the option's label and its value; that string is what's actually stored as `loaded_color`/`required_color`. A raw hex code would be legible in neither the picker nor the "Loaded: PETG · ..." display, so it's never used as the value; `Filament.color_hex` is still surfaced elsewhere purely for reference (a swatch), never as a matching value. This is also exactly what [loaded-spool binding](spoolman.md#loaded-spool-binding) writes, so the two stay in lockstep.
+- **Matching stays case-sensitive plain-string equality**, unchanged in the scheduler. A `required_color` typed by hand under Spoolman mode must match the picker's filament-name value exactly, including case.
 
 Multi-color filaments (Spoolman's `multi_color_hexes`, used when `color_hex` is null) are not supported by any picker; such a filament shows up as a type with no selectable color.
 

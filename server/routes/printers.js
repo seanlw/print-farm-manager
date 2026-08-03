@@ -235,12 +235,16 @@ module.exports = (db) => {
   });
 
   // Derive { material, color } from a Spoolman Spool object's nested Filament.
-  // color_hex arrives without a leading '#' (Spoolman convention); this app's own
-  // filament_colors.hex_color is stored with one, so the leading '#' is added here
-  // to keep the two consistent wherever a Spoolman color reaches loaded_color.
+  // color derives from filament.name (e.g. "Prusament PETG Signal Red"), not the hex
+  // code: a hex string is unreadable as a "Loaded" value in the UI, and this must stay
+  // in lockstep with client/src/useFilamentLibrary.js's Spoolman-mode color derivation
+  // (same field, same string) so the scheduler's plain-string equality match between a
+  // bound printer's loaded_color and a gcode's required_color keeps working. Gated on
+  // color_hex being present, same as the library picker: a multi-color filament (no
+  // single color_hex) is treated as having no color, not guessed.
   function materialColorFromSpool(spool) {
     const material = spool.filament?.material || null;
-    const color = spool.filament?.color_hex ? '#' + spool.filament.color_hex.toUpperCase() : null;
+    const color = (spool.filament?.color_hex && spool.filament?.name) ? spool.filament.name : null;
     return { material, color };
   }
 

@@ -2,6 +2,18 @@
 
 ---
 
+## 2026-08-03: Spoolman: use the filament's name, not its hex code, as the color value (issue #21)
+
+Feedback after live-testing against a real Spoolman instance: showing a raw hex code (`#CC0000`) as the option text in every material/color picker, and in every "Loaded: PETG · #CC0000" display, was a poor operator experience compared to a real name. Spoolman has no separate "color name" field, but it does have `Filament.name` (e.g. "Prusament PETG Signal Red"), which is exactly what the spool-bind picker already showed for a spool's identity.
+
+Switched the color value used throughout Spoolman mode from the filament's hex code to its `name`. This had to change in exactly two places, kept in lockstep so the scheduler's plain-string equality match between a printer's `loaded_color` and a gcode's `required_color` still lines up: `useFilamentLibrary.js`'s Spoolman-mode color derivation (used by every picker) and `printers.js`'s `spoolman-bind`/`spoolman-sync` (used to snapshot a bound printer's `loaded_color`). No picker JSX needed to change at all, every picker already just renders `{c.name}` for both the option's value and label, so the fix lives entirely in what two functions put in that field. `hex_color` is still carried in the picker's data shape and still shown as a swatch elsewhere, just never used as the matching value anymore. Multi-color filaments (no single `color_hex`) are still treated as having no color, unchanged from before.
+
+### Changes
+- `client/src/useFilamentLibrary.js`: Spoolman-mode colors are now keyed and valued by `filament.name` instead of the hex code.
+- `server/routes/printers.js`: `materialColorFromSpool` now derives `loaded_color` from `filament.name`, matching the picker.
+- `docs/filaments.md`, `docs/spoolman.md`: updated the "Spoolman mode" and "Loaded-spool binding" sections to describe the name-based value instead of the hex bridge.
+- `server/tests/printers-filaments.test.js`: updated bind/sync fixtures and assertions to expect the filament name; added a case confirming a colorless (multi-color) filament still binds with no color.
+
 ## 2026-08-02: Spoolman integration, part 4: usage tracking (issue #21)
 
 Fourth and last of the planned chunks (see the earlier Spoolman entries below and `docs/spoolman.md` for the full design). On print completion, reports the grams actually consumed to Spoolman via `PUT /api/v1/spool/:id/use`, so a spool's remaining weight in Spoolman stays accurate without the operator updating it by hand. This is the only chunk that touches code paths adjacent to `parts.completed_qty`, so it was deliberately built and reviewed last: every hook point calls the new `reportJobUsage` strictly after the existing credit statement, and its outcome (success, any of six no-op reasons, or an http failure) never feeds back into a `parts` or `jobs` quantity or status. A dedicated regression test in `scheduler-finished.test.js` asserts the credit is byte-identical whether the Spoolman call succeeds, fails, or rejects outright.

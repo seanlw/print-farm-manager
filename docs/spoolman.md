@@ -57,7 +57,7 @@ Mounted at `/api/spoolman`. The browser never needs Spoolman's base URL or talks
 Proxies `GET /api/v1/vendor`. Returns Spoolman's vendor list unmodified.
 
 ### `GET /api/spoolman/filaments`
-Proxies `GET /api/v1/filament`. Returns Spoolman's filament type list unmodified (includes nested `vendor`, `material`, `color_hex`, see the field note below).
+Proxies `GET /api/v1/filament`. Returns Spoolman's filament type list unmodified (includes nested `vendor`, `material`, `name`, `color_hex`).
 
 ### `GET /api/spoolman/spools`
 Proxies `GET /api/v1/spool`. Query parameters (e.g. `allow_archived`, `filament.material`) are passed straight through to Spoolman.
@@ -67,7 +67,7 @@ Proxies `GET /api/v1/spool/:id`. `404` if Spoolman reports the spool doesn't exi
 
 ## Filament Library UI switch
 
-`client/src/useFilamentLibrary.js` is the shared hook every picker uses. It checks `spoolman_enabled` on mount and either fetches `/api/filaments/types` + `/api/filaments/colors` (local mode) or `/api/spoolman/filaments` grouped into the same `{ id, name }` / `{ id, name, hex_color, type_name }` shape (Spoolman mode), so the picker JSX in Settings.jsx, PrinterDetail.jsx, Printers.jsx, and Projects.jsx needs no branching of its own. See `docs/filaments.md`'s "Spoolman mode" section for the color-format bridge and the case-sensitive matching caveat this introduces.
+`client/src/useFilamentLibrary.js` is the shared hook every picker uses. It checks `spoolman_enabled` on mount and either fetches `/api/filaments/types` + `/api/filaments/colors` (local mode) or `/api/spoolman/filaments` grouped into the same `{ id, name }` / `{ id, name, hex_color, type_name }` shape (Spoolman mode), so the picker JSX in Settings.jsx, PrinterDetail.jsx, Printers.jsx, and Projects.jsx needs no branching of its own. In Spoolman mode, a color's `name` (and therefore its picker value) is the filament's own `Filament.name`, not its hex code, since a hex string is unreadable in a dropdown; `hex_color` is carried along for reference only. See `docs/filaments.md`'s "Spoolman mode" section for the case-sensitive matching caveat this introduces.
 
 While enabled, the Filament Library section in Settings renders read-only (grouped vendor, material, color, filament name), and hides its manual Add Type/Add Color forms rather than deleting the underlying local tables, so disabling the integration instantly restores manual editing.
 
@@ -77,7 +77,7 @@ Two new columns on `printers` (additive, see `docs/database.md`): `spoolman_spoo
 
 Three new `printers.js` action endpoints, documented in full in `docs/api.md`: `POST /api/printers/:id/spoolman-bind`, `spoolman-unbind`, `spoolman-sync`.
 
-**Snapshot-on-bind, not a live lookup.** Binding fetches the spool once via `spoolman.getSpool(db, id)` and writes `loaded_material`/`loaded_color` through the exact same columns `PUT /api/printers/:id` already uses, deriving the color as `'#' + filament.color_hex.toUpperCase()` (see the field-format note above). This is deliberate: the scheduler's dispatch reservation (`_reserveJob`) is synchronous by design, with no I/O, so nothing in the bind/unbind/sync path may be on that call path, and the scheduler itself never learns Spoolman exists, it just keeps reading `loaded_material`/`loaded_color` as plain strings.
+**Snapshot-on-bind, not a live lookup.** Binding fetches the spool once via `spoolman.getSpool(db, id)` and writes `loaded_material`/`loaded_color` through the exact same columns `PUT /api/printers/:id` already uses, deriving the color as `filament.name` (e.g. `"Prusament PETG Signal Red"`), gated on `color_hex` being present so a multi-color filament is treated as having no color rather than guessed. This is the same field, same derivation `useFilamentLibrary.js`'s picker uses for a Spoolman color's value, so a bound printer's `loaded_color` and a gcode's `required_color` picked from the dropdown stay comparable. Deliberately not the hex code: the scheduler's dispatch reservation (`_reserveJob`) is synchronous by design, with no I/O, so nothing in the bind/unbind/sync path may be on that call path, and the scheduler itself never learns Spoolman exists, it just keeps reading `loaded_material`/`loaded_color` as plain strings, which now happen to be human-readable ones.
 
 **Staying in sync is manual, not polled.** If the bound spool's filament data changes in Spoolman later, use `spoolman-sync` (a "Sync from Spoolman" button in PrinterDetail) to re-fetch and re-snapshot. This is not folded into the 15 second poller: entangling two independently-failing systems' error handling for something that changes rarely isn't worth it, and matches this app's general preference for the operator resolving ambiguity over the system inferring it.
 

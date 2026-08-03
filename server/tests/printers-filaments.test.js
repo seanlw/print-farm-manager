@@ -303,7 +303,7 @@ describe('Spoolman spool binding', () => {
 
   const fakeSpool = {
     id: 42,
-    filament: { material: 'PLA', color_hex: '1a1a1a' },
+    filament: { material: 'PLA', color_hex: '1a1a1a', name: 'Prusament PLA Galaxy Black' },
   };
 
   describe('POST /:id/spoolman-bind', () => {
@@ -320,7 +320,7 @@ describe('Spoolman spool binding', () => {
       expect(res.status).toBe(400);
     });
 
-    test('binds the spool and snapshots material/color with a leading # on the hex', async () => {
+    test('binds the spool and snapshots material/color, color as the filament name not the hex', async () => {
       spoolman.isEnabled.mockReturnValue(true);
       spoolman.getSpool.mockResolvedValue(fakeSpool);
 
@@ -328,8 +328,18 @@ describe('Spoolman spool binding', () => {
       expect(res.status).toBe(200);
       expect(res.body.spoolman_spool_id).toBe(42);
       expect(res.body.loaded_material).toBe('PLA');
-      expect(res.body.loaded_color).toBe('#1A1A1A');
+      expect(res.body.loaded_color).toBe('Prusament PLA Galaxy Black');
       expect(spoolman.getSpool).toHaveBeenCalledWith(db, 42);
+    });
+
+    test('does not set a color when the filament has no color_hex (multi-color, unsupported)', async () => {
+      spoolman.isEnabled.mockReturnValue(true);
+      spoolman.getSpool.mockResolvedValue({ id: 43, filament: { material: 'PLA', color_hex: null, name: 'Multi-Color PLA' } });
+
+      const res = await request(app).post(`/api/printers/${printerId}/spoolman-bind`).send({ spool_id: 43 });
+      expect(res.status).toBe(200);
+      expect(res.body.loaded_material).toBe('PLA');
+      expect(res.body.loaded_color).toBeNull();
     });
 
     test('404s when Spoolman reports the spool missing', async () => {
@@ -362,7 +372,7 @@ describe('Spoolman spool binding', () => {
       expect(res.status).toBe(200);
       expect(res.body.spoolman_spool_id).toBeNull();
       expect(res.body.loaded_material).toBe('PLA');
-      expect(res.body.loaded_color).toBe('#1A1A1A');
+      expect(res.body.loaded_color).toBe('Prusament PLA Galaxy Black');
     });
   });
 
@@ -377,12 +387,12 @@ describe('Spoolman spool binding', () => {
       spoolman.getSpool.mockResolvedValue(fakeSpool);
       await request(app).post(`/api/printers/${printerId}/spoolman-bind`).send({ spool_id: 42 });
 
-      spoolman.getSpool.mockResolvedValue({ id: 42, filament: { material: 'PETG', color_hex: 'ff0000' } });
+      spoolman.getSpool.mockResolvedValue({ id: 42, filament: { material: 'PETG', color_hex: 'ff0000', name: 'Prusament PETG Signal Red' } });
       const res = await request(app).post(`/api/printers/${printerId}/spoolman-sync`);
       expect(res.status).toBe(200);
       expect(res.body.spoolman_spool_id).toBe(42);
       expect(res.body.loaded_material).toBe('PETG');
-      expect(res.body.loaded_color).toBe('#FF0000');
+      expect(res.body.loaded_color).toBe('Prusament PETG Signal Red');
       expect(spoolman.getSpool).toHaveBeenLastCalledWith(db, 42);
     });
   });

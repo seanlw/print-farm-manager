@@ -2,6 +2,23 @@
 
 ---
 
+## 2026-08-02: Spoolman: disable manual material/color picking farm-wide while enabled (issue #21)
+
+Follow-up to the loaded-spool binding chunk below, found during manual testing: PrinterDetail's edit form only made Material/Color read-only once a spool was actually bound, but every other picker for a printer's loaded material, the Add Printer form and the Printers page's bulk-edit bar, still let the operator free-pick from Spoolman's filament list even with the integration enabled. That meant a printer's `loaded_material`/`loaded_color` could still end up manually chosen rather than sourced from an actual spool, which is exactly the "which one is this and where did it come from" confusion Spoolman mode is supposed to remove, and it showed up immediately in the Fleet/Printers "Loaded" chip with no way to tell.
+
+Fixed by extending the restriction farm-wide: while `spoolman_enabled` is true, `loaded_material`/`loaded_color` can only be set via binding a spool (PrinterDetail's "Spoolman Spool" card). PrinterDetail's edit fields are read-only whenever the integration is on, not just when bound; the Add Printer form drops the fields entirely (a printer can't be bound before it exists, so binding happens afterward); the Printers bulk-edit bar drops its Material/Color controls (bulk free-picking would bypass the one-spool-per-printer model anyway). `required_material`/`required_color` on G-codes/projects are unaffected: those are matching criteria, not a physical spool binding, and stay free `<select>` pickers.
+
+The per-printer `spoolman_report_usage` opt-in (added in the loaded-spool binding chunk) was reconsidered and kept as-is: it exists specifically so a printer that already reports its own usage to Spoolman natively (e.g. Klipper/Moonraker) isn't double-counted once the usage-tracking chunk lands.
+
+### Changes
+- `client/src/pages/PrinterDetail.jsx`: Material/Color edit fields are now disabled whenever `spoolmanEnabled`, not only when `printer.spoolman_spool_id` is set; hint text distinguishes "bind a spool" (unbound) from "sourced from bound spool #N" (bound).
+- `client/src/pages/Settings.jsx`: Add Printer form hides the Loaded Material/Color fields while Spoolman is enabled, with a hint pointing at PrinterDetail.
+- `client/src/pages/Printers.jsx`: bulk-edit bar drops its Material/Color controls while Spoolman is enabled (Group remains available).
+- `client/src/locales/en.json`: added `settings.spoolmanBindAfterAddHint`, `printerDetail.spoolmanUnboundHint`.
+- `docs/spoolman.md`, `docs/filaments.md`: documented the farm-wide restriction and why it doesn't extend to G-code/project required-material fields.
+
+Verified live in the browser: all three pickers correctly hide/disable with Spoolman enabled and correctly reappear when disabled; existing `loaded_material`/`loaded_color` values on already-configured printers are untouched either way.
+
 ## 2026-08-02: Spoolman integration, part 3: loaded-spool binding (issue #21)
 
 Third of four planned chunks (see parts 1-2 below and `docs/spoolman.md` for the roadmap). A printer can now be bound to a specific Spoolman spool; its `loaded_material`/`loaded_color` are derived from the bound spool's filament instead of typed manually. Binding is a snapshot taken once at bind time, not a live lookup: the scheduler's dispatch reservation is deliberately synchronous with no I/O, so nothing about Spoolman may sit on that call path, and the scheduler itself stays completely unaware Spoolman exists, it just keeps reading the same two plain-string columns it always has. Staying in sync with a later change in Spoolman is a manual "Sync" action, not folded into the poller, so a Spoolman outage never shows up as printer-poll noise.

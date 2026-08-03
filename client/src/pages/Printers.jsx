@@ -73,6 +73,7 @@ export default function Printers() {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const { filamentTypes, filamentColors } = useFilamentLibrary();
   const [registryGroups, setRegistryGroups] = useState([]);
+  const [spoolmanEnabled, setSpoolmanEnabled] = useState(false);
   const [bulkMaterial, setBulkMaterial] = useState('');
   const [bulkColor, setBulkColor]       = useState('');
   const [bulkGroup, setBulkGroup]       = useState('');
@@ -95,6 +96,7 @@ export default function Printers() {
   useEffect(() => {
     fetchPrinters();
     fetch('/api/groups').then(r => r.json()).then(groups => setRegistryGroups(groups.map(g => g.name))).catch(() => {});
+    fetch('/api/settings').then(r => r.json()).then(s => setSpoolmanEnabled(s.spoolman_enabled === 'true')).catch(() => {});
   }, [fetchPrinters]);
 
   function persistCollapsed(next) {
@@ -297,25 +299,29 @@ export default function Printers() {
             {t('common.clear')}
           </button>
           <span style={{ fontSize: 11, color: '#475569', flexShrink: 0 }}>{t('printers.setLabel')}</span>
-          <select
-            value={bulkMaterial}
-            onChange={e => { setBulkMaterial(e.target.value); setBulkColor(''); }}
-            style={bulkInputSx}
-          >
-            <option value="">{t('printers.materialPlaceholder')}</option>
-            {filamentTypes.map(ft => <option key={ft.id} value={ft.name}>{ft.name}</option>)}
-          </select>
-          <select
-            value={bulkColor}
-            onChange={e => setBulkColor(e.target.value)}
-            disabled={!bulkMaterial}
-            style={bulkInputSx}
-          >
-            <option value="">{t('printers.colorPlaceholder')}</option>
-            {filamentColors
-              .filter(c => c.type_name === bulkMaterial)
-              .map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-          </select>
+          {!spoolmanEnabled && (
+            <>
+              <select
+                value={bulkMaterial}
+                onChange={e => { setBulkMaterial(e.target.value); setBulkColor(''); }}
+                style={bulkInputSx}
+              >
+                <option value="">{t('printers.materialPlaceholder')}</option>
+                {filamentTypes.map(ft => <option key={ft.id} value={ft.name}>{ft.name}</option>)}
+              </select>
+              <select
+                value={bulkColor}
+                onChange={e => setBulkColor(e.target.value)}
+                disabled={!bulkMaterial}
+                style={bulkInputSx}
+              >
+                <option value="">{t('printers.colorPlaceholder')}</option>
+                {filamentColors
+                  .filter(c => c.type_name === bulkMaterial)
+                  .map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+              </select>
+            </>
+          )}
           <input
             type="text"
             list="bulk-group-options"

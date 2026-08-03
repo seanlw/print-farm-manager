@@ -89,3 +89,5 @@ Two differences to know about while in this mode:
 - **Matching stays case-sensitive plain-string equality**, unchanged in the scheduler. A `required_color` typed by hand under Spoolman mode must match the picker's hex value exactly, including case.
 
 Multi-color filaments (Spoolman's `multi_color_hexes`, used when `color_hex` is null) are not supported by any picker; such a filament shows up as a type with no selectable color.
+
+**Printer-level pickers are further restricted.** `loaded_material`/`loaded_color` represent what's physically on a printer, so while Spoolman is enabled those two fields can only be set by [binding a spool](spoolman.md#loaded-spool-binding) via PrinterDetail: the Add Printer form (Settings) and the Printers page's bulk-edit bar drop their Material/Color controls entirely, and PrinterDetail's own edit form renders them read-only. This restriction does not apply to `required_material`/`required_color` on G-codes and projects (Projects page): those remain free `<select>` pickers sourced from Spoolman's filament list, since a G-code requirement is a matching criterion, not a physical spool binding.

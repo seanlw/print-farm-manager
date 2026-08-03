@@ -513,8 +513,8 @@ export default function PrinterDetail() {
                 <select
                   value={detailsDraft.loaded_material}
                   onChange={e => setDetailsDraft(d => ({ ...d, loaded_material: e.target.value, loaded_color: '' }))}
-                  disabled={savingDetails || !!printer.spoolman_spool_id}
-                  style={{ ...detailInputStyle, cursor: printer.spoolman_spool_id ? 'not-allowed' : 'pointer' }}
+                  disabled={savingDetails || spoolmanEnabled}
+                  style={{ ...detailInputStyle, cursor: spoolmanEnabled ? 'not-allowed' : 'pointer' }}
                 >
                   <option value="">{t('common.noneOption')}</option>
                   {filamentTypes.map(ft => <option key={ft.id} value={ft.name}>{ft.name}</option>)}
@@ -525,8 +525,8 @@ export default function PrinterDetail() {
                 <select
                   value={detailsDraft.loaded_color}
                   onChange={e => setDetailsDraft(d => ({ ...d, loaded_color: e.target.value }))}
-                  disabled={savingDetails || !detailsDraft.loaded_material || !!printer.spoolman_spool_id}
-                  style={{ ...detailInputStyle, cursor: (detailsDraft.loaded_material && !printer.spoolman_spool_id) ? 'pointer' : 'not-allowed' }}
+                  disabled={savingDetails || !detailsDraft.loaded_material || spoolmanEnabled}
+                  style={{ ...detailInputStyle, cursor: (detailsDraft.loaded_material && !spoolmanEnabled) ? 'pointer' : 'not-allowed' }}
                 >
                   <option value="">{t('common.noneOption')}</option>
                   {filamentColors
@@ -535,9 +535,11 @@ export default function PrinterDetail() {
                 </select>
               </label>
             </div>
-            {printer.spoolman_spool_id && (
+            {spoolmanEnabled && (
               <div style={{ fontSize: 12, color: '#64748b', marginTop: 6 }}>
-                {t('printerDetail.spoolmanBoundHint', { id: printer.spoolman_spool_id })}
+                {printer.spoolman_spool_id
+                  ? t('printerDetail.spoolmanBoundHint', { id: printer.spoolman_spool_id })
+                  : t('printerDetail.spoolmanUnboundHint')}
               </div>
             )}
             {detailsError && (

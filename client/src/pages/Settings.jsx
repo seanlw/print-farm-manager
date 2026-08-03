@@ -1060,31 +1060,40 @@ export default function Settings() {
                 {allGroups.map(g => <option key={g.name} value={g.name} />)}
               </datalist>
             </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>{t('settings.loadedMaterialLabel')}</label>
-              <select
-                value={addForm.loaded_material}
-                onChange={e => setAddForm(p => ({ ...p, loaded_material: e.target.value, loaded_color: '' }))}
-                style={inputStyle}
-              >
-                <option value="">{t('common.noneOption')}</option>
-                {filamentTypes.map(ft => <option key={ft.id} value={ft.name}>{ft.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>{t('settings.loadedColorLabel')}</label>
-              <select
-                value={addForm.loaded_color}
-                onChange={e => setAddForm(p => ({ ...p, loaded_color: e.target.value }))}
-                disabled={!addForm.loaded_material}
-                style={inputStyle}
-              >
-                <option value="">{t('common.noneOption')}</option>
-                {filamentColors
-                  .filter(c => c.type_name === addForm.loaded_material)
-                  .map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-              </select>
-            </div>
+            {spoolmanEnabled ? (
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>{t('settings.loadedMaterialLabel')}</label>
+                <p style={{ color: '#475569', fontSize: 12, margin: 0 }}>{t('settings.spoolmanBindAfterAddHint')}</p>
+              </div>
+            ) : (
+              <>
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>{t('settings.loadedMaterialLabel')}</label>
+                  <select
+                    value={addForm.loaded_material}
+                    onChange={e => setAddForm(p => ({ ...p, loaded_material: e.target.value, loaded_color: '' }))}
+                    style={inputStyle}
+                  >
+                    <option value="">{t('common.noneOption')}</option>
+                    {filamentTypes.map(ft => <option key={ft.id} value={ft.name}>{ft.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>{t('settings.loadedColorLabel')}</label>
+                  <select
+                    value={addForm.loaded_color}
+                    onChange={e => setAddForm(p => ({ ...p, loaded_color: e.target.value }))}
+                    disabled={!addForm.loaded_material}
+                    style={inputStyle}
+                  >
+                    <option value="">{t('common.noneOption')}</option>
+                    {filamentColors
+                      .filter(c => c.type_name === addForm.loaded_material)
+                      .map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                  </select>
+                </div>
+              </>
+            )}
           </div>
           <button
             type="submit"

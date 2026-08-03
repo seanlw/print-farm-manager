@@ -2,6 +2,19 @@
 
 ---
 
+## 2026-08-03: replace the Filament Library's per-filament table with a count summary (issue #21)
+
+Requested: a farm's Spoolman library can grow large, and now that a "Manage in Spoolman" link exists for actually adding or editing filaments, listing every one of them in the read-only Filament Library section was more clutter than it was worth.
+
+Replaced the per-filament table (vendor, type, color swatch, name columns) with a single line reporting how many filaments Spoolman has, or a distinct empty-state hint when it has none. Also corrected the neighboring "Managed in Spoolman..." hint text, which still said the Spoolman Integration section was "above" it in the page even though an earlier change moved that section below the Filament Library section, leaving the wording stale.
+
+### Changes
+- `client/src/pages/Settings.jsx`: replaced the read-only filament table with a count summary line.
+- `client/src/locales/en.json`: added `settings.spoolmanLibraryEmptyHint` and pluralized `settings.spoolmanLibrarySummary_one`/`_other`; removed the now-unused `settings.colVendor`; fixed `settings.spoolmanLibraryManagedHint` to say "section below" instead of "section above".
+- `docs/spoolman.md`: updated the "Filament Library UI switch" section to describe the summary line instead of the removed table.
+
+Verified live against a real Spoolman instance: the section now shows "2 filaments in Spoolman." and the hint correctly points below. Client builds clean, full test suite passes (no server-side change, so no new tests needed).
+
 ## 2026-08-03: add a "Manage in Spoolman" link to the Filament Library section (issue #21)
 
 Requested: this app doesn't manage vendors, filaments, or spools itself, that's Spoolman's job, so the read-only Filament Library view needed a direct way to get to Spoolman's own UI for adding or editing them.

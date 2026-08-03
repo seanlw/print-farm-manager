@@ -773,43 +773,12 @@ export default function Settings() {
                 {t('settings.spoolmanManageLink')} ↗
               </a>
             </p>
-            {spoolmanFilaments.length === 0 && (
+            {spoolmanFilaments.length === 0 ? (
               <p style={{ color: '#475569', fontSize: 13 }}>{t('settings.spoolmanLibraryEmptyHint')}</p>
-            )}
-            {spoolmanFilaments.length > 0 && (
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                <thead>
-                  <tr style={{ color: '#64748b', textAlign: 'left', borderBottom: '1px solid #334155' }}>
-                    <th style={{ padding: '4px 8px' }}>{t('settings.colVendor')}</th>
-                    <th style={{ padding: '4px 8px' }}>{t('settings.colType')}</th>
-                    <th style={{ padding: '4px 8px' }}>{t('settings.colColor')}</th>
-                    <th style={{ padding: '4px 8px' }}>{t('settings.colName')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {spoolmanFilaments.map(f => {
-                    const hex = f.color_hex ? '#' + f.color_hex.toUpperCase() : null;
-                    return (
-                      <tr key={f.id} style={{ borderBottom: '1px solid #1a2030' }}>
-                        <td style={{ padding: '6px 8px', color: '#64748b', fontSize: 12 }}>{f.vendor?.name || '-'}</td>
-                        <td style={{ padding: '6px 8px', color: '#64748b', fontSize: 12 }}>{f.material || '-'}</td>
-                        <td style={{ padding: '6px 8px' }}>
-                          <span style={{
-                            display: 'inline-block', width: 16, height: 16, borderRadius: '50%',
-                            background: hex || '#334155',
-                            border: '1px solid #475569',
-                            verticalAlign: 'middle',
-                          }} title={hex || t('settings.noColorSetTitle')} />
-                        </td>
-                        <td style={{ padding: '6px 8px', color: '#e2e8f0' }}>
-                          {f.name}
-                          {hex && <span style={{ color: '#475569', fontSize: 11, marginLeft: 8, fontFamily: 'monospace' }}>{hex}</span>}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            ) : (
+              <p style={{ color: '#475569', fontSize: 13 }}>
+                {t('settings.spoolmanLibrarySummary', { count: spoolmanFilaments.length })}
+              </p>
             )}
           </div>
         )}

@@ -14,22 +14,35 @@
 //                           also in DB from prior cycle); printing job must be credited,
 //                           not silently shadowed by the old finished job
 
+jest.mock('../integrations/spoolman', () => ({ reportJobUsage: jest.fn().mockResolvedValue({ ok: false, reason: 'disabled' }) }));
+
 const request  = require('supertest');
 const express  = require('express');
 const Database = require('better-sqlite3');
+const spoolman = require('../integrations/spoolman');
+
+afterEach(() => {
+  spoolman.reportJobUsage.mockClear();
+  spoolman.reportJobUsage.mockResolvedValue({ ok: false, reason: 'disabled' });
+});
 
 // ── Minimal express app that replicates the set-ready route ──────────────────
+// Mirrors server/index.js's real handler, including the Spoolman usage-report
+// hook after each credit branch and the spoolman_warning response field: the
+// real handler lives inline in index.js's app.listen closure and can't be
+// imported standalone, so this reimplementation must be kept in sync by hand.
 
 function makeApp(db, scheduler = { scheduleForPrinter: jest.fn(), startedAt: 0 }) {
   const app = express();
   app.use(express.json());
 
-  app.post('/api/printers/:id/set-ready', (req, res) => {
+  app.post('/api/printers/:id/set-ready', async (req, res) => {
     const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id);
     if (!printer) return res.status(404).json({ error: 'Printer not found' });
 
     const { confirmed_qty } = req.body || {};
     const now = Date.now();
+    let spoolmanWarning = null;
 
     // A printing job takes priority over any old finished job from a prior cycle.
     // Without this check, set-ready would find the stale finished job, take the
@@ -99,6 +112,9 @@ function makeApp(db, scheduler = { scheduleForPrinter: jest.fn(), startedAt: 0 }
           UPDATE parts SET completed_qty = completed_qty + ?, updated_at = ? WHERE id = ?
         `).run(creditQty, now, activeJob.part_id);
 
+        const usageResult = await spoolman.reportJobUsage(db, activeJob.id);
+        if (usageResult.reason === 'http-error') spoolmanWarning = `Spoolman usage report failed: ${usageResult.error}`;
+
         const part = db.prepare('SELECT * FROM parts WHERE id = ?').get(activeJob.part_id);
 
         if (part.completed_qty >= part.target_qty) {
@@ -129,7 +145,7 @@ function makeApp(db, scheduler = { scheduleForPrinter: jest.fn(), startedAt: 0 }
     db.prepare('UPDATE printers SET is_held = 0 WHERE id = ?').run(printer.id);
     const updated = db.prepare('SELECT * FROM printers WHERE id = ?').get(printer.id);
     scheduler.scheduleForPrinter(updated);
-    res.json(updated);
+    res.json(spoolmanWarning ? { ...updated, spoolman_warning: spoolmanWarning } : updated);
   });
 
   return app;
@@ -741,5 +757,96 @@ describe('set-ready — stopped printer (cancelled job newer than old finished j
     // Normal delta path against the finished job: 4 + (3 - 4) = 3
     const part = db.prepare('SELECT completed_qty FROM parts WHERE id = ?').get(partId);
     expect(part.completed_qty).toBe(3);
+  });
+});
+
+// ── Spoolman usage reporting: warning surfacing, credit unaffected ────────────
+//
+// spoolman_warning must appear in the response only when reportJobUsage genuinely
+// failed to reach Spoolman (reason: 'http-error'): every other reason (disabled,
+// not-bound, opted-out, already-reported) is an expected silent no-op. In every
+// case, completed_qty crediting must be identical to the no-Spoolman baseline.
+
+describe('set-ready: Spoolman usage reporting', () => {
+  test('does not include spoolman_warning when reportJobUsage is disabled (default)', async () => {
+    const db        = makeDb();
+    const printerId = seedPrinter(db, { name: `P_sm_disabled_${Date.now()}` });
+    const projectId = seedProject(db);
+    const partId    = seedPart(db, projectId, { completedQty: 0 });
+    const gcodeId   = seedGcode(db, partId);
+    seedJob(db, printerId, partId, gcodeId, 'printing', { partsPerPlate: 4 });
+
+    const res = await request(makeApp(db))
+      .post(`/api/printers/${printerId}/set-ready`)
+      .send({});
+
+    expect(res.body.spoolman_warning).toBeUndefined();
+    const part = db.prepare('SELECT completed_qty FROM parts WHERE id = ?').get(partId);
+    expect(part.completed_qty).toBe(4);
+  });
+
+  test('includes spoolman_warning on an http-error, but still credits completed_qty', async () => {
+    spoolman.reportJobUsage.mockResolvedValueOnce({ ok: false, reason: 'http-error', error: 'connect ECONNREFUSED' });
+    const db        = makeDb();
+    const printerId = seedPrinter(db, { name: `P_sm_http_${Date.now()}` });
+    const projectId = seedProject(db);
+    const partId    = seedPart(db, projectId, { completedQty: 0 });
+    const gcodeId   = seedGcode(db, partId);
+    seedJob(db, printerId, partId, gcodeId, 'printing', { partsPerPlate: 4 });
+
+    const res = await request(makeApp(db))
+      .post(`/api/printers/${printerId}/set-ready`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.spoolman_warning).toMatch(/ECONNREFUSED/);
+    const part = db.prepare('SELECT completed_qty FROM parts WHERE id = ?').get(partId);
+    expect(part.completed_qty).toBe(4); // credit unaffected by the Spoolman failure
+  });
+
+  test('does not include spoolman_warning for expected no-op reasons (not-bound)', async () => {
+    spoolman.reportJobUsage.mockResolvedValueOnce({ ok: false, reason: 'not-bound' });
+    const db        = makeDb();
+    const printerId = seedPrinter(db, { name: `P_sm_notbound_${Date.now()}` });
+    const projectId = seedProject(db);
+    const partId    = seedPart(db, projectId, { completedQty: 0 });
+    const gcodeId   = seedGcode(db, partId);
+    seedJob(db, printerId, partId, gcodeId, 'printing', { partsPerPlate: 4 });
+
+    const res = await request(makeApp(db))
+      .post(`/api/printers/${printerId}/set-ready`)
+      .send({});
+
+    expect(res.body.spoolman_warning).toBeUndefined();
+  });
+
+  test('calls reportJobUsage with the credited job id', async () => {
+    const db        = makeDb();
+    const printerId = seedPrinter(db, { name: `P_sm_called_${Date.now()}` });
+    const projectId = seedProject(db);
+    const partId    = seedPart(db, projectId, { completedQty: 0 });
+    const gcodeId   = seedGcode(db, partId);
+    const jobId     = seedJob(db, printerId, partId, gcodeId, 'printing', { partsPerPlate: 4 });
+
+    await request(makeApp(db))
+      .post(`/api/printers/${printerId}/set-ready`)
+      .send({});
+
+    expect(spoolman.reportJobUsage).toHaveBeenCalledWith(db, jobId);
+  });
+
+  test('does not call reportJobUsage on the normal-finish path (no new credit event)', async () => {
+    const db        = makeDb();
+    const printerId = seedPrinter(db);
+    const projectId = seedProject(db);
+    const partId    = seedPart(db, projectId, { completedQty: 4 });
+    const gcodeId   = seedGcode(db, partId);
+    seedJob(db, printerId, partId, gcodeId, 'finished', { partsPerPlate: 4 });
+
+    await request(makeApp(db))
+      .post(`/api/printers/${printerId}/set-ready`)
+      .send({});
+
+    expect(spoolman.reportJobUsage).not.toHaveBeenCalled();
   });
 });

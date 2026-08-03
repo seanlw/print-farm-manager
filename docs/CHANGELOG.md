@@ -2,6 +2,26 @@
 
 ---
 
+## 2026-08-02: Spoolman integration, part 4: usage tracking (issue #21)
+
+Fourth and last of the planned chunks (see the earlier Spoolman entries below and `docs/spoolman.md` for the full design). On print completion, reports the grams actually consumed to Spoolman via `PUT /api/v1/spool/:id/use`, so a spool's remaining weight in Spoolman stays accurate without the operator updating it by hand. This is the only chunk that touches code paths adjacent to `parts.completed_qty`, so it was deliberately built and reviewed last: every hook point calls the new `reportJobUsage` strictly after the existing credit statement, and its outcome (success, any of six no-op reasons, or an http failure) never feeds back into a `parts` or `jobs` quantity or status. A dedicated regression test in `scheduler-finished.test.js` asserts the credit is byte-identical whether the Spoolman call succeeds, fails, or rejects outright.
+
+Usage is opt-in per printer (`spoolman_report_usage`, added in the loaded-spool binding chunk) so a printer that already reports its own usage to Spoolman natively (Klipper/Moonraker) isn't double-counted, exactly the concern the upstream issue raised. The grams figure comes from `gcodes.filament_used_grams`, the field only ever written by parsing the sliced file's own metadata (`server/gcode-decode.js`), never from the operator-editable `material_grams` field, so it satisfies "not a guessed number" as the user required. Marking a Spoolman-reported job failed does not attempt to reverse the report (Spoolman's negative-amount semantics aren't documented, so this doesn't guess); a notification tells the operator to adjust the spool manually instead.
+
+Implemented from Spoolman's API source (`Donkie/Spoolman`, master branch, `spoolman/api/v1/spool.py`), not yet validated against a live Spoolman instance: standing one up and exercising a full bind, dispatch, and Set Ready cycle is the real acceptance test.
+
+### Changes
+- `server/db.js`: additive columns `jobs.spoolman_spool_id` (snapshot at dispatch, same rationale as `parts_per_plate`), `jobs.spoolman_reported_at` (idempotency guard).
+- `server/integrations/spoolman.js`: new `reportJobUsage(db, jobId)`, never throws, typed `{ ok, reason }` return for every outcome.
+- `server/scheduler.js`: `_reserveJob` now snapshots the printer's bound spool onto the job row at dispatch time; `_handleFinished` fires `reportJobUsage` (fire-and-forget) strictly after the existing `completed_qty` credit.
+- `server/index.js`: `set-ready`'s missed-finish credit branches now await `reportJobUsage` and include `spoolman_warning` in the response on a genuine http failure only.
+- `server/routes/printers.js`: same pattern in `complete-and-decommission`'s missed-finish branch; `mark-job-failure` adds a notification (not a reversal) when the job it's failing already had usage reported.
+- `docs/database.md`, `docs/api.md`, `docs/spoolman.md`: documented the new columns, the `spoolman_warning` response field, and the full usage-tracking design.
+- `server/tests/spoolman-client.test.js`: full decision-tree coverage for `reportJobUsage`, all Spoolman calls mocked.
+- `server/tests/scheduler-finished.test.js`, `server/tests/set-ready.test.js`, `server/tests/printers-decommission.test.js`: extended with Spoolman-reporting coverage, including the regression guard that `completed_qty` crediting is unaffected by a failed or rejected report.
+- `server/tests/backup-restore.test.js`: seeded and asserted the two new `jobs` columns round-trip (no `backup.js` changes needed, per the existing sync-pairs pattern).
+- `server/tests/scheduler-targeting.test.js`, `server/tests/scheduler-sweep.test.js`, `server/tests/scheduler-file.test.js`: added the new `jobs.spoolman_spool_id` column to their in-memory schemas (the real dispatch-reservation INSERT now always includes it).
+
 ## 2026-08-02: move Spoolman Integration section under Filament Library in Settings (issue #21)
 
 Requested during review: the Spoolman Integration section sat down near Farm Name/Language, separated from the Filament Library section it's an alternative data source for. Moved it to sit directly below Filament Library instead, no functional change.

@@ -138,7 +138,7 @@ If `confirmed_qty` is provided and differs from the `parts_per_plate` of the pri
 
 **OFFLINE-with-job exception:** if the printer's current status is `OFFLINE` and it has a `printing` job (no finished job), qty is not credited and the job is not marked finished. The printer is simply unheld and the job continues to its natural finish. This is the "Job OK" path from the Fleet UI — the operator is confirming the job is still running, not that it completed.
 
-Returns the updated printer object.
+If this request newly credits a job (the missed-finish paths, not the normal-finish delta path) and the [Spoolman integration](spoolman.md) is enabled and bound, usage is reported to Spoolman as part of the same request. Returns the updated printer object, plus `spoolman_warning` (string) only when that report genuinely failed to reach Spoolman: an expected no-op (not bound, opted out, already reported) is silent, not a warning.
 
 ### `POST /api/printers/:id/decommission`
 
@@ -153,7 +153,7 @@ Operator confirms the last print was successful, then takes the machine offline 
 
 Also drops any cached driver connection for the printer, same as decommission.
 
-Returns the updated printer object.
+Same Spoolman usage-reporting behavior as `set-ready` on the missed-finish path: returns the updated printer object, plus `spoolman_warning` only on a genuine reporting failure.
 
 ### `POST /api/printers/:id/recommission`
 
@@ -176,6 +176,8 @@ Marks the printer's most relevant active or recently-completed job as `failed`, 
 - `uploading` — no qty change (print never started).
 
 If no tracked job matches any of the above, the printer is still decommissioned — operator intent is always to take the machine offline.
+
+If the matched job already had its usage reported to Spoolman (`jobs.spoolman_reported_at` set), that report is **not** reversed: Spoolman's `/use` endpoint semantics for a negative amount aren't documented, so this deliberately doesn't guess. A notification is added instead telling the operator to adjust the spool's remaining weight manually in Spoolman if needed.
 
 Returns `{ "success": true, "job_id": N }` (or `job_id: null` when no job was found). Returns `404` only if the printer itself does not exist.
 

@@ -97,15 +97,17 @@ beforeEach(() => {
       filament_used_mm    REAL
     );
     CREATE TABLE jobs (
-      id               INTEGER PRIMARY KEY AUTOINCREMENT,
-      part_id          INTEGER NOT NULL REFERENCES parts(id),
-      printer_id       INTEGER NOT NULL REFERENCES printers(id),
-      gcode_id         INTEGER REFERENCES gcodes(id),
-      parts_per_plate  INTEGER NOT NULL,
-      status           TEXT DEFAULT 'queued',
-      started_at       INTEGER,
-      finished_at      INTEGER,
-      created_at       INTEGER NOT NULL
+      id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+      part_id                INTEGER NOT NULL REFERENCES parts(id),
+      printer_id             INTEGER NOT NULL REFERENCES printers(id),
+      gcode_id               INTEGER REFERENCES gcodes(id),
+      parts_per_plate        INTEGER NOT NULL,
+      status                 TEXT DEFAULT 'queued',
+      started_at             INTEGER,
+      finished_at            INTEGER,
+      created_at             INTEGER NOT NULL,
+      spoolman_spool_id      INTEGER,
+      spoolman_reported_at   INTEGER
     );
     CREATE TABLE printer_events (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,6 +170,14 @@ beforeEach(() => {
        2, 45.5, '["Bambu Farm"]', 'PETG', 'Red', 123456, 45.2, 15230.5)
   `).run(now);
 
+  db.prepare(`
+    INSERT INTO jobs
+      (part_id, printer_id, gcode_id, parts_per_plate, status, started_at, finished_at, created_at,
+       spoolman_spool_id, spoolman_reported_at)
+    VALUES
+      (1, 1, 1, 4, 'finished', ?, ?, ?, 99, ?)
+  `).run(now - 3600_000, now, now - 3600_000, now);
+
   // Two types/colors (not one) so a restore that gets the filament_colors -> filament_types
   // FK order wrong, or maps a color to the wrong type, doesn't slip through by coincidence.
   db.prepare(`INSERT INTO printer_models (model_id, label, connector) VALUES ('x1c', 'Bambu X1 Carbon', 'bambu')`).run();
@@ -226,6 +236,10 @@ describe('Backup export/restore — column round-trip regression', () => {
       filament_used_grams: 45.2,
       filament_used_mm: 15230.5,
     });
+    expect(res.body.jobs[0]).toMatchObject({
+      spoolman_spool_id: 99,
+    });
+    expect(res.body.jobs[0].spoolman_reported_at).toEqual(expect.any(Number));
   });
 
   test('restore preserves every migrated column, not just the base schema', async () => {
@@ -240,6 +254,7 @@ describe('Backup export/restore — column round-trip regression', () => {
       db.prepare("UPDATE projects SET required_material = NULL, required_color = NULL, allowed_groups = NULL").run();
       db.prepare("UPDATE parts SET print_time_seconds = NULL, material_grams = NULL").run();
       db.prepare("UPDATE gcodes SET ams_slot = NULL, material_grams = NULL, allowed_groups = NULL, required_material = NULL, required_color = NULL, file_size = NULL, filament_used_grams = NULL, filament_used_mm = NULL").run();
+      db.prepare("UPDATE jobs SET spoolman_spool_id = NULL, spoolman_reported_at = NULL").run();
 
       const restoreRes = await request(app)
         .post('/api/backup/restore')
@@ -273,6 +288,10 @@ describe('Backup export/restore — column round-trip regression', () => {
       expect(gcode.file_size).toBe(123456);
       expect(gcode.filament_used_grams).toBe(45.2);
       expect(gcode.filament_used_mm).toBe(15230.5);
+
+      const job = db.prepare('SELECT * FROM jobs WHERE id = 1').get();
+      expect(job.spoolman_spool_id).toBe(99);
+      expect(job.spoolman_reported_at).toEqual(expect.any(Number));
     } finally {
       fs.unlinkSync(backupFile);
     }

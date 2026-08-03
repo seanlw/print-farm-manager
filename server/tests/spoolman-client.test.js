@@ -4,6 +4,9 @@
 jest.mock('axios');
 const axios = require('axios');
 
+jest.mock('../notifications', () => ({ add: jest.fn() }));
+const notifications = require('../notifications');
+
 const Database = require('better-sqlite3');
 const spoolman = require('../integrations/spoolman');
 
@@ -15,7 +18,27 @@ function setSetting(key, value) {
 
 beforeEach(() => {
   db = new Database(':memory:');
-  db.exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+  db.exec(`
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE printers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      spoolman_spool_id INTEGER,
+      spoolman_report_usage INTEGER DEFAULT 0
+    );
+    CREATE TABLE gcodes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      parts_per_plate INTEGER,
+      filament_used_grams REAL
+    );
+    CREATE TABLE jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      printer_id INTEGER,
+      gcode_id INTEGER,
+      parts_per_plate INTEGER,
+      spoolman_spool_id INTEGER,
+      spoolman_reported_at INTEGER
+    );
+  `);
   setSetting('spoolman_enabled', 'false');
   spoolman.invalidateCache();
   jest.clearAllMocks();
@@ -127,5 +150,190 @@ describe('getStatus', () => {
     const status = await spoolman.getStatus(db);
     expect(status.reachable).toBe(false);
     expect(status.error).toMatch(/ECONNREFUSED/);
+  });
+});
+
+describe('reportJobUsage', () => {
+  function seedPrinter(overrides = {}) {
+    return db.prepare(
+      'INSERT INTO printers (spoolman_spool_id, spoolman_report_usage) VALUES (?, ?)'
+    ).run(
+      overrides.spoolman_spool_id ?? null,
+      overrides.spoolman_report_usage ?? 1
+    ).lastInsertRowid;
+  }
+
+  function seedGcode(overrides = {}) {
+    return db.prepare(
+      'INSERT INTO gcodes (parts_per_plate, filament_used_grams) VALUES (?, ?)'
+    ).run(
+      overrides.parts_per_plate ?? 4,
+      'filament_used_grams' in overrides ? overrides.filament_used_grams : 40
+    ).lastInsertRowid;
+  }
+
+  function seedJob(printerId, gcodeId, overrides = {}) {
+    return db.prepare(
+      'INSERT INTO jobs (printer_id, gcode_id, parts_per_plate, spoolman_spool_id, spoolman_reported_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(
+      printerId,
+      gcodeId,
+      overrides.parts_per_plate ?? 4,
+      'spoolman_spool_id' in overrides ? overrides.spoolman_spool_id : null,
+      overrides.spoolman_reported_at ?? null
+    ).lastInsertRowid;
+  }
+
+  test('disabled: returns without touching the network or the DB beyond the settings check', async () => {
+    const printerId = seedPrinter({ spoolman_spool_id: 7 });
+    const gcodeId    = seedGcode();
+    const jobId      = seedJob(printerId, gcodeId, { spoolman_spool_id: 7 });
+
+    const result = await spoolman.reportJobUsage(db, jobId);
+
+    expect(result).toEqual({ ok: false, reason: 'disabled' });
+    expect(axios.put).not.toHaveBeenCalled();
+  });
+
+  describe('when enabled', () => {
+    beforeEach(() => {
+      setSetting('spoolman_enabled', 'true');
+      setSetting('spoolman_base_url', 'http://spoolman.local:7912');
+    });
+
+    test('not-found: unknown job id', async () => {
+      const result = await spoolman.reportJobUsage(db, 999999);
+      expect(result).toEqual({ ok: false, reason: 'not-found' });
+    });
+
+    test('already-reported: job.spoolman_reported_at already set', async () => {
+      const printerId = seedPrinter({ spoolman_spool_id: 7 });
+      const gcodeId    = seedGcode();
+      const jobId      = seedJob(printerId, gcodeId, { spoolman_spool_id: 7, spoolman_reported_at: Date.now() });
+
+      const result = await spoolman.reportJobUsage(db, jobId);
+
+      expect(result).toEqual({ ok: false, reason: 'already-reported' });
+      expect(axios.put).not.toHaveBeenCalled();
+    });
+
+    test('opted-out: printer.spoolman_report_usage is 0', async () => {
+      const printerId = seedPrinter({ spoolman_spool_id: 7, spoolman_report_usage: 0 });
+      const gcodeId    = seedGcode();
+      const jobId      = seedJob(printerId, gcodeId, { spoolman_spool_id: 7 });
+
+      const result = await spoolman.reportJobUsage(db, jobId);
+
+      expect(result).toEqual({ ok: false, reason: 'opted-out' });
+      expect(axios.put).not.toHaveBeenCalled();
+    });
+
+    test('not-bound: neither the job nor the printer has a spool bound', async () => {
+      const printerId = seedPrinter({ spoolman_spool_id: null });
+      const gcodeId    = seedGcode();
+      const jobId      = seedJob(printerId, gcodeId, { spoolman_spool_id: null });
+
+      const result = await spoolman.reportJobUsage(db, jobId);
+
+      expect(result).toEqual({ ok: false, reason: 'not-bound' });
+      expect(axios.put).not.toHaveBeenCalled();
+    });
+
+    test('falls back to the printer\'s currently bound spool when the job has no snapshot', async () => {
+      const printerId = seedPrinter({ spoolman_spool_id: 7 });
+      const gcodeId    = seedGcode();
+      const jobId      = seedJob(printerId, gcodeId, { spoolman_spool_id: null });
+      axios.put.mockResolvedValueOnce({ data: {} });
+
+      const result = await spoolman.reportJobUsage(db, jobId);
+
+      expect(result.ok).toBe(true);
+      expect(axios.put).toHaveBeenCalledWith(
+        'http://spoolman.local:7912/api/v1/spool/7/use',
+        expect.anything(),
+        expect.anything()
+      );
+    });
+
+    test('no-parsed-usage: gcode has no filament_used_grams, and a notification is added', async () => {
+      const printerId = seedPrinter({ spoolman_spool_id: 7 });
+      const gcodeId    = seedGcode({ filament_used_grams: null });
+      const jobId      = seedJob(printerId, gcodeId, { spoolman_spool_id: 7 });
+
+      const result = await spoolman.reportJobUsage(db, jobId);
+
+      expect(result).toEqual({ ok: false, reason: 'no-parsed-usage' });
+      expect(axios.put).not.toHaveBeenCalled();
+      expect(notifications.add).toHaveBeenCalledWith(expect.stringContaining(`job ${jobId}`));
+    });
+
+    test('no-parsed-usage: job has no gcode_id at all', async () => {
+      const printerId = seedPrinter({ spoolman_spool_id: 7 });
+      const jobId = db.prepare(
+        'INSERT INTO jobs (printer_id, gcode_id, parts_per_plate, spoolman_spool_id) VALUES (?, NULL, 4, 7)'
+      ).run(printerId).lastInsertRowid;
+
+      const result = await spoolman.reportJobUsage(db, jobId);
+      expect(result).toEqual({ ok: false, reason: 'no-parsed-usage' });
+    });
+
+    test('success: PUTs the exact use_weight payload and marks the job reported', async () => {
+      const printerId = seedPrinter({ spoolman_spool_id: 7 });
+      const gcodeId    = seedGcode({ parts_per_plate: 4, filament_used_grams: 40 });
+      const jobId      = seedJob(printerId, gcodeId, { spoolman_spool_id: 7, parts_per_plate: 4 });
+      axios.put.mockResolvedValueOnce({ data: {} });
+
+      const result = await spoolman.reportJobUsage(db, jobId);
+
+      expect(result).toEqual({ ok: true, grams: 40 });
+      expect(axios.put).toHaveBeenCalledWith(
+        'http://spoolman.local:7912/api/v1/spool/7/use',
+        { use_weight: 40 },
+        expect.objectContaining({ timeout: 8000 })
+      );
+      const job = db.prepare('SELECT spoolman_reported_at FROM jobs WHERE id = ?').get(jobId);
+      expect(job.spoolman_reported_at).toEqual(expect.any(Number));
+    });
+
+    test('prorates by the live gcode.parts_per_plate, not the frozen job value', async () => {
+      // Job was dispatched when the gcode plated 4; the gcode has since been edited to plate 2.
+      // gramsForJob = job.parts_per_plate(4) * (filament_used_grams(40) / gcode.parts_per_plate(2)) = 80
+      const printerId = seedPrinter({ spoolman_spool_id: 7 });
+      const gcodeId    = seedGcode({ parts_per_plate: 2, filament_used_grams: 40 });
+      const jobId      = seedJob(printerId, gcodeId, { spoolman_spool_id: 7, parts_per_plate: 4 });
+      axios.put.mockResolvedValueOnce({ data: {} });
+
+      const result = await spoolman.reportJobUsage(db, jobId);
+
+      expect(result.grams).toBe(80);
+    });
+
+    test('http-error: axios rejects, job is not marked reported, no throw', async () => {
+      const printerId = seedPrinter({ spoolman_spool_id: 7 });
+      const gcodeId    = seedGcode();
+      const jobId      = seedJob(printerId, gcodeId, { spoolman_spool_id: 7 });
+      axios.put.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+
+      const result = await spoolman.reportJobUsage(db, jobId);
+
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('http-error');
+      expect(result.error).toMatch(/ECONNREFUSED/);
+      const job = db.prepare('SELECT spoolman_reported_at FROM jobs WHERE id = ?').get(jobId);
+      expect(job.spoolman_reported_at).toBeNull();
+    });
+
+    test('a second call after a successful report is idempotent (already-reported)', async () => {
+      const printerId = seedPrinter({ spoolman_spool_id: 7 });
+      const gcodeId    = seedGcode();
+      const jobId      = seedJob(printerId, gcodeId, { spoolman_spool_id: 7 });
+      axios.put.mockResolvedValueOnce({ data: {} });
+
+      await spoolman.reportJobUsage(db, jobId);
+      const second = await spoolman.reportJobUsage(db, jobId);
+
+      expect(second).toEqual({ ok: false, reason: 'already-reported' });
+      expect(axios.put).toHaveBeenCalledTimes(1);
+    });
   });
 });

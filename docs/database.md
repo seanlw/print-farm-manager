@@ -166,11 +166,13 @@ CREATE TABLE IF NOT EXISTS jobs (
                    -- queued | uploading | printing | finished | failed | cancelled
   started_at       INTEGER,
   finished_at      INTEGER,
-  created_at       INTEGER NOT NULL
+  created_at       INTEGER NOT NULL,
+  spoolman_spool_id     INTEGER,  -- snapshot of printers.spoolman_spool_id at dispatch time (see docs/spoolman.md)
+  spoolman_reported_at  INTEGER   -- epoch ms; set once usage has been reported to Spoolman for this job, idempotency guard
 );
 ```
 
-`parts_per_plate` is snapshotted at dispatch time so changing the G-code record after dispatch doesn't retroactively affect in-flight jobs.
+`parts_per_plate` is snapshotted at dispatch time so changing the G-code record after dispatch doesn't retroactively affect in-flight jobs. `spoolman_spool_id` is snapshotted the same way, for the same reason.
 
 ### printer_events
 

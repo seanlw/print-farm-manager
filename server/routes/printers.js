@@ -6,6 +6,7 @@ const router = express.Router();
 const events = require('../events');
 const { dropConnection } = require('../drivers');
 const spoolman = require('../integrations/spoolman');
+const notifications = require('../notifications');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -372,7 +373,7 @@ module.exports = (db) => {
   // the machine is decommissioned instead of released to take the next job. If the reduced count
   // drops the part below its target, the part (and its project) reopens and re-enters the queue for
   // the next available printer.
-  router.post('/:id/complete-and-decommission', (req, res) => {
+  router.post('/:id/complete-and-decommission', async (req, res) => {
     const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id);
     if (!printer) return res.status(404).json({ error: 'Printer not found' });
 
@@ -381,6 +382,8 @@ module.exports = (db) => {
     const parsedQty = (confirmed_qty != null && !isNaN(parseInt(confirmed_qty, 10)))
       ? parseInt(confirmed_qty, 10)
       : null;
+    // Set only on a genuine Spoolman http failure, see set-ready's identical comment in index.js.
+    let spoolmanWarning = null;
 
     // Reconcile a part's status with its completed_qty: close (and maybe complete the project) when
     // the target is met, reopen (and reactivate the project) when a reduced count drops below it.
@@ -419,6 +422,8 @@ module.exports = (db) => {
       db.prepare(`UPDATE jobs SET status = 'finished', finished_at = ? WHERE id = ?`).run(now, printingJob.id);
       db.prepare(`UPDATE parts SET completed_qty = MAX(0, completed_qty + ?), updated_at = ? WHERE id = ?`)
         .run(creditQty, now, printingJob.part_id);
+      const usageResult = await spoolman.reportJobUsage(db, printingJob.id);
+      if (usageResult.reason === 'http-error') spoolmanWarning = `Spoolman usage report failed: ${usageResult.error}`;
       settlePart(printingJob.part_id);
       console.log(`[printers] ${printer.name} missed-finish credited ${creditQty} — decommissioning for maintenance`);
     } else if (parsedQty != null) {
@@ -443,7 +448,8 @@ module.exports = (db) => {
     events.insert(printer.id, 'decommission', decommNote ?? 'operator confirmed successful print — taken offline for maintenance');
     dropConnection(printer);
     console.log(`[printers] ${printer.name} decommissioned after confirmed good print`);
-    res.json(db.prepare('SELECT * FROM printers WHERE id = ?').get(printer.id));
+    const updated = db.prepare('SELECT * FROM printers WHERE id = ?').get(printer.id);
+    res.json(spoolmanWarning ? { ...updated, spoolman_warning: spoolmanWarning } : updated);
   });
 
   // POST /api/printers/:id/recommission — handled in server/index.js (needs scheduler access)
@@ -503,6 +509,17 @@ module.exports = (db) => {
     }
 
     const now = Date.now();
+
+    // Spoolman's /use endpoint semantics for a negative amount aren't documented in
+    // what's available from the Spoolman API source, so this deliberately does not
+    // attempt to reverse a usage report already sent for this job (same rule as never
+    // guessing an undocumented protocol field). A named limitation, not a silent gap:
+    // the operator is told to adjust Spoolman by hand if needed.
+    if (job.spoolman_reported_at) {
+      notifications.add(
+        `Job ${job.id} was marked failed after usage was already reported to Spoolman for spool #${job.spoolman_spool_id}. The spool's remaining weight was not automatically restored; adjust it manually in Spoolman if needed.`
+      );
+    }
 
     db.prepare("UPDATE jobs SET status = 'failed' WHERE id = ?").run(job.id);
 

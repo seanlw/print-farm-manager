@@ -91,7 +91,8 @@ function makeDb({ printerGroup = null, printerMaterial = null, printerColor = nu
       part_id INTEGER NOT NULL, printer_id INTEGER NOT NULL,
       gcode_id INTEGER, parts_per_plate INTEGER NOT NULL,
       status TEXT DEFAULT 'queued',
-      started_at INTEGER, finished_at INTEGER, created_at INTEGER NOT NULL
+      started_at INTEGER, finished_at INTEGER, created_at INTEGER NOT NULL,
+      spoolman_spool_id INTEGER
     );
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO settings VALUES ('dispatch_batch_size', '10');

@@ -2,6 +2,18 @@
 
 ---
 
+## 2026-08-03: fix jobs migration crash on fresh installs, introduced by the Spoolman columns (issue #21)
+
+Triggered by a real failure: CI's test suite step started failing after pushing the Spoolman integration to origin/main, with every affected test throwing either `table jobs_migrated has 9 columns but 11 values were supplied` or `table jobs_migrated already exists`. Root cause was in `server/db.js`'s startup migration order, not in any test. An older, pre-existing migration there makes `jobs.gcode_id` nullable by rebuilding the table: it hardcodes a 9-column schema and does `INSERT INTO jobs_migrated SELECT * FROM jobs`, and it fires on every brand-new database because the base `CREATE TABLE IF NOT EXISTS jobs` still declares `gcode_id NOT NULL`. The two new `ALTER TABLE jobs ADD COLUMN spoolman_spool_id/spoolman_reported_at` statements had been placed earlier in the file, before that rebuild ran, so by the time the rebuild's `SELECT *` fired, `jobs` already had 11 columns against the rebuild's hardcoded 9, and the unguarded, un-try/caught `db.exec` for that rebuild threw mid-statement. That left an orphaned `jobs_migrated` table behind (the `DROP`/`RENAME` after it never ran), so every subsequent test file that transitively required the real `server/db.js` (any route module that imports `server/events.js`, which always requires `./db`) against the same on-disk `data/farm.db` hit "already exists" next. This was invisible in every manual and Docker-based test done during this integration's development, because the long-lived local dev database had already been past the `gcode_id`-nullable migration for a long time, so the rebuild never re-ran there; it only shows up against a genuinely fresh database, which is exactly what CI's clean checkout produces, and exactly what a new self-installer would hit too. The GitHub Actions Docker-image build never ran (it gates on the test job), so no published image ever shipped with this bug.
+
+Fixed by moving both `jobs` column additions to after the `gcode_id` rebuild instead of before it, so the rebuild always sees the pre-Spoolman 9-column shape it expects, regardless of whether it's a brand-new database or an old one still carrying the NOT NULL constraint.
+
+### Changes
+- `server/db.js`: moved `ALTER TABLE jobs ADD COLUMN spoolman_spool_id/spoolman_reported_at` to run after the `gcode_id`-nullable rebuild migration instead of before it.
+- `server/tests/db-fresh-install.test.js` (new): requires the real `db.js` (copied into an isolated scratch directory, never the shared dev database) against a brand-new file and asserts `jobs` ends up with a nullable `gcode_id` and both Spoolman columns, an 11-column table in total. This is a deliberate, narrow exception to this codebase's "never import the real db.js in a test" convention, justified because the bug is specifically in db.js's own migration ordering and cannot be reproduced any other way.
+
+Verified: manually reproduced the exact CI error by requiring a copy of the pre-fix `db.js` against a fresh scratch database inside the dev container, confirmed the fixed version no longer throws and produces the correct 11-column schema, then ran the full suite clean.
+
 ## 2026-08-03: replace the Filament Library's per-filament table with a count summary (issue #21)
 
 Requested: a farm's Spoolman library can grow large, and now that a "Manage in Spoolman" link exists for actually adding or editing filaments, listing every one of them in the read-only Filament Library section was more clutter than it was worth.

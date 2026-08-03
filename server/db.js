@@ -113,8 +113,6 @@ try { db.exec('ALTER TABLE gcodes ADD COLUMN filament_used_mm REAL'); } catch (_
 try { db.exec('ALTER TABLE projects ADD COLUMN allowed_groups TEXT'); } catch (_) {}
 try { db.exec('ALTER TABLE printers ADD COLUMN spoolman_spool_id INTEGER'); } catch (_) {}
 try { db.exec('ALTER TABLE printers ADD COLUMN spoolman_report_usage INTEGER DEFAULT 0'); } catch (_) {}
-try { db.exec('ALTER TABLE jobs ADD COLUMN spoolman_spool_id INTEGER'); } catch (_) {}
-try { db.exec('ALTER TABLE jobs ADD COLUMN spoolman_reported_at INTEGER'); } catch (_) {}
 
 // Printer models — source of truth for which models this farm supports.
 // New installs start empty; operator adds models in Settings.
@@ -287,6 +285,12 @@ if (gcodeIdCol && gcodeIdCol.notnull === 1) {
     PRAGMA foreign_keys = ON;
   `);
 }
+
+// These must run after the gcode_id-nullable rebuild above: that migration
+// hardcodes jobs' column list and rebuilds the table via SELECT *, so any
+// column added to jobs before it runs breaks it on every fresh install.
+try { db.exec('ALTER TABLE jobs ADD COLUMN spoolman_spool_id INTEGER'); } catch (_) {}
+try { db.exec('ALTER TABLE jobs ADD COLUMN spoolman_reported_at INTEGER'); } catch (_) {}
 
 // Backfill decommission events for printers that were decommissioned before the
 // printer_events table existed. Runs once per printer (checked via event absence).

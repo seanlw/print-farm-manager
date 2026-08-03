@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useFormattingLocale } from '../useFormattingLocale';
+import { useFilamentLibrary } from '../useFilamentLibrary';
 
 function formatTimestamp(ms, formattingLocale) {
   if (!ms) return '—';
@@ -115,8 +116,7 @@ export default function PrinterDetail() {
   const [nameError, setNameError]     = useState(null);
   const [renaming, setRenaming]       = useState(false);
   const [models, setModels]           = useState([]);
-  const [filamentTypes, setFilamentTypes]   = useState([]);
-  const [filamentColors, setFilamentColors] = useState([]);
+  const { filamentTypes, filamentColors } = useFilamentLibrary();
   const [groups, setGroups]                 = useState([]);
   const [editingDetails, setEditingDetails] = useState(false);
   const [detailsDraft, setDetailsDraft]     = useState({});
@@ -124,21 +124,17 @@ export default function PrinterDetail() {
   const [savingDetails, setSavingDetails]   = useState(false);
 
   const fetchData = useCallback(async () => {
-    const [printerRes, eventsRes, statsRes, modelsRes, typesRes, colorsRes, groupsRes] = await Promise.all([
+    const [printerRes, eventsRes, statsRes, modelsRes, groupsRes] = await Promise.all([
       fetch(`/api/printers/${id}`),
       fetch(`/api/printers/${id}/events`),
       fetch(`/api/printers/${id}/jobs/stats`),
       fetch('/api/models'),
-      fetch('/api/filaments/types'),
-      fetch('/api/filaments/colors'),
       fetch('/api/groups'),
     ]);
     if (printerRes.ok)  setPrinter(await printerRes.json());
     if (eventsRes.ok)   setEvents(await eventsRes.json());
     if (statsRes.ok)    setStats(await statsRes.json());
     if (modelsRes.ok)   setModels(await modelsRes.json());
-    if (typesRes.ok)    setFilamentTypes(await typesRes.json());
-    if (colorsRes.ok)   setFilamentColors(await colorsRes.json());
     if (groupsRes.ok)   setGroups((await groupsRes.json()).map(g => g.name));
     setLoading(false);
   }, [id]);

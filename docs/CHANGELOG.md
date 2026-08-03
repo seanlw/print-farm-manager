@@ -2,6 +2,20 @@
 
 ---
 
+## 2026-08-02: Spoolman integration, part 2: Filament Library UI switch (issue #21)
+
+Second of four planned chunks (see part 1 below and `docs/spoolman.md` for the roadmap). Every material/color picker on the farm, and the Settings Filament Library section itself, now sources from Spoolman's live filament list instead of the local `filament_types`/`filament_colors` tables whenever the integration is enabled, a full mode switch rather than a per-picker toggle. Disabled (the default), nothing changes.
+
+All four pickers (Settings add-printer form, PrinterDetail, Printers bulk edit, Projects gcode/project fields) previously fetched `/api/filaments/types`/`/api/filaments/colors` independently. Extracted that into a shared `useFilamentLibrary()` hook that, in Spoolman mode, instead fetches `/api/spoolman/filaments` and derives the same `{ id, name }` / `{ id, name, hex_color, type_name }` shape the pickers already expected, so no picker's own JSX needed to branch on which mode is active. Spoolman has no separate "color name" concept, only a hex code, so under Spoolman mode the hex string itself (with a leading `#` added to match this app's own convention) becomes the picker's color value, not a friendly name, documented as a caveat in `docs/filaments.md` since it changes what a hand-typed `required_color` needs to match.
+
+### Changes
+- `client/src/useFilamentLibrary.js` (new): shared hook sourcing material/color pickers from local or Spoolman data depending on `spoolman_enabled`.
+- `client/src/pages/Settings.jsx`: Add Printer form's picker now uses the shared hook; Filament Library section renders read-only (grouped vendor/material/color/name from `/api/spoolman/filaments`) and hides its manual Add Type/Add Color forms while Spoolman mode is enabled; restoring a backup also refreshes the Spoolman settings display and filament library.
+- `client/src/pages/PrinterDetail.jsx`, `client/src/pages/Printers.jsx`, `client/src/pages/Projects.jsx`: switched their material/color pickers to the shared hook.
+- `client/src/locales/en.json`: added `settings.spoolmanLibrary*`/`settings.colVendor` translation keys.
+- `docs/filaments.md`: new "Spoolman mode" section documenting the mode switch, the hex-not-name color value, and the case-sensitive match caveat.
+- `docs/spoolman.md`: updated roadmap status.
+
 ## 2026-08-02: Spoolman integration, part 1: settings and a read-only library proxy (issue #21)
 
 Upstream issue #21 asked for an optional integration with [Spoolman](https://github.com/Donkie/Spoolman), a self-hosted filament inventory manager, as an alternative to this app's manual filament library, per-printer loaded-material tracking, and usage reporting. This is the first of four planned chunks: a settings toggle, a server-side Spoolman client module, and a proxy API so the browser never talks to Spoolman directly. It has zero effect on any farm that doesn't enable it, and does not yet change any picker UI, bind spools to printers, or report usage: those are separate, later chunks (see `docs/spoolman.md` for the full roadmap).

@@ -10,8 +10,8 @@ Endpoint shapes were verified directly against Spoolman's own source (`spoolman/
 
 This is being built incrementally, in independently-working chunks:
 
-1. **Settings + read-only library proxy** (this chunk): enable/disable, base URL, a server-side proxy so the browser never talks to Spoolman directly, and a connectivity status check.
-2. Filament Library UI switch: planned, not yet implemented.
+1. **Settings + read-only library proxy**: enable/disable, base URL, a server-side proxy so the browser never talks to Spoolman directly, and a connectivity status check.
+2. **Filament Library UI switch** (this chunk): every material/color picker on the farm, and the Settings Filament Library section itself, source from Spoolman instead of the local library while enabled. See `docs/filaments.md`'s "Spoolman mode" section.
 3. Loaded-spool binding (`printers.spoolman_spool_id`): planned, not yet implemented.
 4. Usage tracking (report consumed grams to Spoolman on print completion): planned, not yet implemented.
 
@@ -62,9 +62,11 @@ Proxies `GET /api/v1/spool`. Query parameters (e.g. `allow_archived`, `filament.
 ### `GET /api/spoolman/spools/:id`
 Proxies `GET /api/v1/spool/:id`. `404` if Spoolman reports the spool doesn't exist.
 
-## A field-format note for later chunks
+## Filament Library UI switch
 
-Spoolman's `Filament.color_hex` is stored **without** a leading `#` (e.g. `"FF0000"`). This app's own `filament_colors.hex_color` (see `docs/filaments.md`) is stored **with** one (e.g. `"#FF0000"`). Any future UI that renders a Spoolman color alongside the local library must bridge this format, not compare the two directly.
+`client/src/useFilamentLibrary.js` is the shared hook every picker uses. It checks `spoolman_enabled` on mount and either fetches `/api/filaments/types` + `/api/filaments/colors` (local mode) or `/api/spoolman/filaments` grouped into the same `{ id, name }` / `{ id, name, hex_color, type_name }` shape (Spoolman mode), so the picker JSX in Settings.jsx, PrinterDetail.jsx, Printers.jsx, and Projects.jsx needs no branching of its own. See `docs/filaments.md`'s "Spoolman mode" section for the color-format bridge and the case-sensitive matching caveat this introduces.
+
+While enabled, the Filament Library section in Settings renders read-only (grouped vendor, material, color, filament name), and hides its manual Add Type/Add Color forms rather than deleting the underlying local tables, so disabling the integration instantly restores manual editing.
 
 ## Settings UI
 

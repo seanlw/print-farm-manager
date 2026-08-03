@@ -4,6 +4,7 @@ import { useToast } from '../useToast';
 import { useConfirm } from '../useConfirm';
 import { SUPPORTED_LANGUAGES } from '../i18n';
 import { useFormattingLocale } from '../useFormattingLocale';
+import { useFilamentLibrary } from '../useFilamentLibrary';
 
 function LanguageSwitcher() {
   const { t, i18n } = useTranslation();
@@ -72,16 +73,25 @@ export default function Settings() {
   // Add single printer
   // Printer models — fetched from DB, used throughout this page
   const [allModels, setAllModels] = useState([]);
-  const [filamentTypes, setFilamentTypes] = useState([]);   // [{id, name}]
-  const [filamentColors, setFilamentColors] = useState([]); // [{id, name, hex_color}]
+  const { filamentTypes, filamentColors, librarySource, refetchFilamentLibrary } = useFilamentLibrary();
   const [allGroups, setAllGroups] = useState([]);           // [{name, created_at}]
   const fetchModels = useCallback(() => {
     fetch('/api/models').then(r => r.json()).then(setAllModels).catch(() => {});
-    fetch('/api/filaments/types').then(r => r.json()).then(setFilamentTypes).catch(() => {});
-    fetch('/api/filaments/colors').then(r => r.json()).then(setFilamentColors).catch(() => {});
     fetch('/api/groups').then(r => r.json()).then(setAllGroups).catch(() => {});
   }, []);
   useEffect(() => { fetchModels(); }, [fetchModels]);
+
+  // Read-only Spoolman filament display, grouped vendor -> filament, used only when
+  // librarySource === 'spoolman' (the Filament Library section hides its manual CRUD
+  // forms in that mode; see docs/spoolman.md).
+  const [spoolmanFilaments, setSpoolmanFilaments] = useState([]);
+  useEffect(() => {
+    if (librarySource !== 'spoolman') return;
+    fetch('/api/spoolman/filaments')
+      .then(r => (r.ok ? r.json() : []))
+      .then(setSpoolmanFilaments)
+      .catch(() => setSpoolmanFilaments([]));
+  }, [librarySource]);
 
   // Filament Library management
   const [typeForm, setTypeForm] = useState({ name: '' });
@@ -100,7 +110,7 @@ export default function Settings() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t('settings.failedToAddType'));
       setTypeForm({ name: '' });
-      fetchModels();
+      refetchFilamentLibrary();
       showToast(t('settings.filamentTypeAddedToast'));
     } catch (err) {
       setTypeFormError(err.message);
@@ -113,7 +123,7 @@ export default function Settings() {
       const res = await fetch(`/api/filaments/types/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t('settings.failedToDelete'));
-      fetchModels();
+      refetchFilamentLibrary();
       showToast(t('settings.itemRemovedToast', { name }));
     } catch (err) {
       setTypeDeleteError(prev => ({ ...prev, [id]: err.message }));
@@ -140,7 +150,7 @@ export default function Settings() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t('settings.failedToAddColor'));
       setColorForm({ type_id: '', name: '', hex_color: '' });
-      fetchModels();
+      refetchFilamentLibrary();
       showToast(t('settings.filamentColorAddedToast'));
     } catch (err) {
       setColorFormError(err.message);
@@ -153,7 +163,7 @@ export default function Settings() {
       const res = await fetch(`/api/filaments/colors/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t('settings.failedToDelete'));
-      fetchModels();
+      refetchFilamentLibrary();
       showToast(t('settings.itemRemovedToast', { name }));
     } catch (err) {
       setColorDeleteError(prev => ({ ...prev, [id]: err.message }));
@@ -366,6 +376,7 @@ export default function Settings() {
       setSpoolmanEnabled(nextEnabled);
       if (nextEnabled) fetchSpoolmanStatus();
       else setSpoolmanStatus(null);
+      refetchFilamentLibrary();
     } catch (err) {
       setSpoolmanError(err.message);
     }
@@ -382,7 +393,10 @@ export default function Settings() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t('settings.saveFailedGeneric'));
       showToast(t('settings.spoolmanSavedToast'));
-      if (spoolmanEnabled) fetchSpoolmanStatus();
+      if (spoolmanEnabled) {
+        fetchSpoolmanStatus();
+        refetchFilamentLibrary();
+      }
     } catch (err) {
       setSpoolmanError(err.message);
     }
@@ -444,12 +458,15 @@ export default function Settings() {
       // Restore replaces printer_models/groups/filament library/settings wholesale:
       // refresh this page's state (and the sidebar's farm name) instead of requiring a reload.
       fetchModels();
+      refetchFilamentLibrary();
       fetch('/api/settings')
         .then(r => r.json())
         .then(settingsData => {
           if (settingsData.dispatch_batch_size) setBatchSize(settingsData.dispatch_batch_size);
           setFarmName(settingsData.farm_name || '');
           window.dispatchEvent(new CustomEvent('farmNameChanged', { detail: settingsData.farm_name || '' }));
+          setSpoolmanEnabled(settingsData.spoolman_enabled === 'true');
+          setSpoolmanBaseUrl(settingsData.spoolman_base_url || '');
         })
         .catch(() => {});
     } catch (err) {
@@ -732,6 +749,52 @@ export default function Settings() {
           {t('settings.filamentLibraryHint')}
         </p>
 
+        {librarySource === 'spoolman' && (
+          <div>
+            <p style={{ color: '#94a3b8', fontSize: 13, marginBottom: 12 }}>{t('settings.spoolmanLibraryManagedHint')}</p>
+            {spoolmanFilaments.length === 0 && (
+              <p style={{ color: '#475569', fontSize: 13 }}>{t('settings.spoolmanLibraryEmptyHint')}</p>
+            )}
+            {spoolmanFilaments.length > 0 && (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr style={{ color: '#64748b', textAlign: 'left', borderBottom: '1px solid #334155' }}>
+                    <th style={{ padding: '4px 8px' }}>{t('settings.colVendor')}</th>
+                    <th style={{ padding: '4px 8px' }}>{t('settings.colType')}</th>
+                    <th style={{ padding: '4px 8px' }}>{t('settings.colColor')}</th>
+                    <th style={{ padding: '4px 8px' }}>{t('settings.colName')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {spoolmanFilaments.map(f => {
+                    const hex = f.color_hex ? '#' + f.color_hex.toUpperCase() : null;
+                    return (
+                      <tr key={f.id} style={{ borderBottom: '1px solid #1a2030' }}>
+                        <td style={{ padding: '6px 8px', color: '#64748b', fontSize: 12 }}>{f.vendor?.name || '-'}</td>
+                        <td style={{ padding: '6px 8px', color: '#64748b', fontSize: 12 }}>{f.material || '-'}</td>
+                        <td style={{ padding: '6px 8px' }}>
+                          <span style={{
+                            display: 'inline-block', width: 16, height: 16, borderRadius: '50%',
+                            background: hex || '#334155',
+                            border: '1px solid #475569',
+                            verticalAlign: 'middle',
+                          }} title={hex || t('settings.noColorSetTitle')} />
+                        </td>
+                        <td style={{ padding: '6px 8px', color: '#e2e8f0' }}>
+                          {f.name}
+                          {hex && <span style={{ color: '#475569', fontSize: 11, marginLeft: 8, fontFamily: 'monospace' }}>{hex}</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
+        {librarySource !== 'spoolman' && (
+        <>
         {/* Filament Types */}
         <h3 style={{ fontSize: 14, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>{t('settings.typesHeading')}</h3>
         {filamentTypes.length > 0 && (
@@ -881,6 +944,8 @@ export default function Settings() {
           </button>
         </form>
         {colorFormError && <div style={{ marginTop: 8, color: '#fca5a5', fontSize: 13 }}>{colorFormError}</div>}
+        </>
+        )}
       </section>
 
       {/* Add Single Printer */}

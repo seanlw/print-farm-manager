@@ -5,6 +5,7 @@ import { useToast } from '../useToast';
 import EmptyState from '../components/EmptyState';
 import { useConfirm } from '../useConfirm';
 import GcodeViewerModal from '../GcodeViewerModal';
+import { useFilamentLibrary } from '../useFilamentLibrary';
 
 // ── Estimate helpers ──────────────────────────────────────────────────────────
 
@@ -964,13 +965,10 @@ export default function Projects() {
   // group is a persisted entity, not derived from which printers currently
   // carry it), so unlike the old per-model /api/printers/groups call this
   // never needs to re-fetch when a gcode's target model changes.
-  const [filamentTypes,  setFilamentTypes]  = useState([]);
-  const [filamentColors, setFilamentColors] = useState([]);
+  const { filamentTypes, filamentColors } = useFilamentLibrary();
   const [allGroups,      setAllGroups]      = useState([]);
 
   useEffect(() => {
-    fetch('/api/filaments/types').then(r => r.json()).then(setFilamentTypes).catch(() => {});
-    fetch('/api/filaments/colors').then(r => r.json()).then(setFilamentColors).catch(() => {});
     fetch('/api/groups').then(r => r.json()).then(groups => setAllGroups(groups.map(g => g.name))).catch(() => {});
   }, []);
 

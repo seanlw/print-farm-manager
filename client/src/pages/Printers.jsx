@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useFilamentLibrary } from '../useFilamentLibrary';
 
 const STATUS_COLORS = {
   IDLE:      { bg: '#1e3a5f', text: '#93c5fd', labelKey: 'common.statusIdle' },
@@ -70,8 +71,7 @@ export default function Printers() {
 
   // Bulk-selection state
   const [selectedIds, setSelectedIds] = useState(new Set());
-  const [filamentTypes, setFilamentTypes]   = useState([]);
-  const [filamentColors, setFilamentColors] = useState([]);
+  const { filamentTypes, filamentColors } = useFilamentLibrary();
   const [registryGroups, setRegistryGroups] = useState([]);
   const [bulkMaterial, setBulkMaterial] = useState('');
   const [bulkColor, setBulkColor]       = useState('');
@@ -94,8 +94,6 @@ export default function Printers() {
 
   useEffect(() => {
     fetchPrinters();
-    fetch('/api/filaments/types').then(r => r.json()).then(setFilamentTypes).catch(() => {});
-    fetch('/api/filaments/colors').then(r => r.json()).then(setFilamentColors).catch(() => {});
     fetch('/api/groups').then(r => r.json()).then(groups => setRegistryGroups(groups.map(g => g.name))).catch(() => {});
   }, [fetchPrinters]);
 

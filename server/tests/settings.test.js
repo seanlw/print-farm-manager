@@ -74,3 +74,45 @@ describe('PUT /api/settings/dispatch_batch_size', () => {
     expect(res.body.error).toMatch(/unknown setting key/i);
   });
 });
+
+describe('PUT /api/settings/spoolman_enabled', () => {
+  test('accepts "true" and "false"', async () => {
+    let res = await request(app).put('/api/settings/spoolman_enabled').send({ value: 'true' });
+    expect(res.status).toBe(200);
+    res = await request(app).put('/api/settings/spoolman_enabled').send({ value: 'false' });
+    expect(res.status).toBe(200);
+  });
+
+  test('rejects any other value', async () => {
+    const res = await request(app).put('/api/settings/spoolman_enabled').send({ value: 'yes' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/must be "true" or "false"/i);
+  });
+});
+
+describe('PUT /api/settings/spoolman_base_url', () => {
+  test('accepts an http(s) URL', async () => {
+    const res = await request(app)
+      .put('/api/settings/spoolman_base_url')
+      .send({ value: 'http://spoolman.local:7912' });
+    expect(res.status).toBe(200);
+    expect(db.prepare("SELECT value FROM settings WHERE key = 'spoolman_base_url'").get().value)
+      .toBe('http://spoolman.local:7912');
+  });
+
+  test('rejects a value with no scheme', async () => {
+    const res = await request(app)
+      .put('/api/settings/spoolman_base_url')
+      .send({ value: 'spoolman.local:7912' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/http:\/\/ or https:\/\//);
+  });
+
+  test('rejects a value over 200 characters', async () => {
+    const res = await request(app)
+      .put('/api/settings/spoolman_base_url')
+      .send({ value: 'http://' + 'a'.repeat(200) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/200 characters/);
+  });
+});

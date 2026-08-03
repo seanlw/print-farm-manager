@@ -255,6 +255,11 @@ try {
 try {
   db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('dispatch_batch_size', '10')").run();
 } catch (_) {}
+// Spoolman integration: off by default; spoolman_base_url has no seeded row
+// (absence means "not configured", checked explicitly rather than defaulting to '').
+try {
+  db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('spoolman_enabled', 'false')").run();
+} catch (_) {}
 
 // Make jobs.gcode_id nullable so gcodes can be deleted after jobs have run
 const gcodeIdCol = db.prepare("PRAGMA table_info(jobs)").all().find(c => c.name === 'gcode_id');

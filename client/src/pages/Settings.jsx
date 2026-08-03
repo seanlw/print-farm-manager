@@ -291,15 +291,34 @@ export default function Settings() {
   const [farmName, setFarmName] = useState('');
   const [farmNameError, setFarmNameError] = useState(null);
 
+  // Spoolman integration: off by default, gated behind an enable toggle + base URL
+  const [spoolmanEnabled, setSpoolmanEnabled] = useState(false);
+  const [spoolmanBaseUrl, setSpoolmanBaseUrl] = useState('');
+  const [spoolmanError, setSpoolmanError] = useState(null);
+  const [spoolmanStatus, setSpoolmanStatus] = useState(null);
+
+  function fetchSpoolmanStatus() {
+    fetch('/api/spoolman/status')
+      .then(r => r.json())
+      .then(setSpoolmanStatus)
+      .catch(() => {});
+  }
+
   useEffect(() => {
     fetch('/api/settings')
       .then(r => r.json())
       .then(data => {
         if (data.dispatch_batch_size) setBatchSize(data.dispatch_batch_size);
         if (data.farm_name) setFarmName(data.farm_name);
+        setSpoolmanEnabled(data.spoolman_enabled === 'true');
+        if (data.spoolman_base_url) setSpoolmanBaseUrl(data.spoolman_base_url);
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (spoolmanEnabled) fetchSpoolmanStatus();
+  }, [spoolmanEnabled]);
 
   async function handleSaveBatchSize() {
     setBatchSizeError(null);
@@ -331,6 +350,41 @@ export default function Settings() {
       showToast(t('settings.farmNameSavedToast'));
     } catch (err) {
       setFarmNameError(err.message);
+    }
+  }
+
+  async function handleToggleSpoolmanEnabled(nextEnabled) {
+    setSpoolmanError(null);
+    try {
+      const res = await fetch('/api/settings/spoolman_enabled', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: nextEnabled ? 'true' : 'false' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || t('settings.saveFailedGeneric'));
+      setSpoolmanEnabled(nextEnabled);
+      if (nextEnabled) fetchSpoolmanStatus();
+      else setSpoolmanStatus(null);
+    } catch (err) {
+      setSpoolmanError(err.message);
+    }
+  }
+
+  async function handleSaveSpoolmanBaseUrl() {
+    setSpoolmanError(null);
+    try {
+      const res = await fetch('/api/settings/spoolman_base_url', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: spoolmanBaseUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || t('settings.saveFailedGeneric'));
+      showToast(t('settings.spoolmanSavedToast'));
+      if (spoolmanEnabled) fetchSpoolmanStatus();
+    } catch (err) {
+      setSpoolmanError(err.message);
     }
   }
 
@@ -1134,6 +1188,46 @@ export default function Settings() {
         </div>
         {farmNameError && (
           <div style={{ marginTop: 10, color: '#fca5a5', fontSize: 13 }}>{farmNameError}</div>
+        )}
+      </section>
+
+      {/* Spoolman Integration */}
+      <section style={{ background: '#1e2433', borderRadius: 10, padding: 20, marginBottom: 24, maxWidth: 640 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{t('settings.spoolmanTitle')}</h2>
+        <p style={{ color: '#64748b', fontSize: 13, marginBottom: 16 }}>
+          {t('settings.spoolmanHint')}
+        </p>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 16, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={spoolmanEnabled}
+            onChange={e => handleToggleSpoolmanEnabled(e.target.checked)}
+          />
+          {t('settings.spoolmanEnabledLabel')}
+        </label>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            value={spoolmanBaseUrl}
+            onChange={e => setSpoolmanBaseUrl(e.target.value)}
+            placeholder={t('settings.spoolmanBaseUrlExample')}
+            style={{ ...inputStyle, width: 320 }}
+          />
+          <button
+            onClick={handleSaveSpoolmanBaseUrl}
+            style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+          >
+            {t('common.save')}
+          </button>
+        </div>
+        {spoolmanError && (
+          <div style={{ marginTop: 10, color: '#fca5a5', fontSize: 13 }}>{spoolmanError}</div>
+        )}
+        {spoolmanEnabled && spoolmanStatus && (
+          <div style={{ marginTop: 10, fontSize: 13, color: spoolmanStatus.reachable ? '#4ade80' : '#fca5a5' }}>
+            {spoolmanStatus.reachable
+              ? t('settings.spoolmanConnected', { url: spoolmanStatus.base_url })
+              : t('settings.spoolmanUnreachable', { error: spoolmanStatus.error || spoolmanStatus.base_url })}
+          </div>
         )}
       </section>
 

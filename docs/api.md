@@ -591,8 +591,39 @@ Body: `{ "value": "..." }`. Allowed keys:
 |---|---|---|
 | `dispatch_batch_size` | integer 1-100 | How many printers the scheduler keeps uploading or printing at once (a concurrency target, not a fixed group size; it draws deeper into the ready queue to fill the target if some printers have no dispatchable candidate) |
 | `farm_name` | ≤ 40 chars | Sidebar branding (falls back to "Print Farm") |
+| `spoolman_enabled` | `"true"` or `"false"` | Turns the [Spoolman integration](spoolman.md) on or off |
+| `spoolman_base_url` | `http://...` or `https://...`, ≤ 200 chars | Base URL of a self-hosted Spoolman instance |
 
 Returns `400` for unknown keys or failed validation.
+
+---
+
+## Spoolman
+
+Optional integration with a self-hosted Spoolman instance. See [docs/spoolman.md](spoolman.md) for the full design and current implementation status. Every endpoint below is mounted at `/api/spoolman`, returns `400` if `spoolman_enabled` is not `"true"` or no `spoolman_base_url` is configured, and returns `502` with the upstream error message if Spoolman itself can't be reached.
+
+### `GET /api/spoolman/status`
+
+```json
+{ "enabled": true, "base_url": "http://spoolman.local:7912", "reachable": true }
+```
+`reachable: false` includes an `error` field.
+
+### `GET /api/spoolman/vendors`
+
+Proxies Spoolman's `GET /api/v1/vendor`, response unmodified.
+
+### `GET /api/spoolman/filaments`
+
+Proxies Spoolman's `GET /api/v1/filament`, response unmodified.
+
+### `GET /api/spoolman/spools`
+
+Proxies Spoolman's `GET /api/v1/spool`. Query parameters are passed straight through to Spoolman (e.g. `?allow_archived=false`).
+
+### `GET /api/spoolman/spools/:id`
+
+Proxies Spoolman's `GET /api/v1/spool/:id`. `404` if Spoolman reports the spool doesn't exist.
 
 ---
 

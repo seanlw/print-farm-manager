@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-08-02: Spoolman integration, part 1: settings and a read-only library proxy (issue #21)
+
+Upstream issue #21 asked for an optional integration with [Spoolman](https://github.com/Donkie/Spoolman), a self-hosted filament inventory manager, as an alternative to this app's manual filament library, per-printer loaded-material tracking, and usage reporting. This is the first of four planned chunks: a settings toggle, a server-side Spoolman client module, and a proxy API so the browser never talks to Spoolman directly. It has zero effect on any farm that doesn't enable it, and does not yet change any picker UI, bind spools to printers, or report usage: those are separate, later chunks (see `docs/spoolman.md` for the full roadmap).
+
+Two new settings: `spoolman_enabled` (off by default) and `spoolman_base_url` (unset by default). `server/integrations/spoolman.js` wraps Spoolman's REST API (`GET /vendor`, `GET /filament`, `GET/PUT /spool`), verified directly against Spoolman's own source on GitHub rather than guessed, with a 60 second cache on list endpoints to avoid hammering a Spoolman instance on every page load. Every function no-ops or throws a typed error when the integration is disabled, so an uninvolved farm sees exactly one extra `settings` table lookup and no network calls, ever. Implemented from Spoolman's API source (`Donkie/Spoolman`, master branch), not yet validated against a live Spoolman instance.
+
+### Changes
+- `server/db.js`: seeded `spoolman_enabled` default (`'false'`) in the settings table.
+- `server/integrations/spoolman.js` (new): Spoolman REST client with `getConfig`, `isEnabled`, `getStatus`, `listVendors`, `listFilaments`, `listSpools`, `getSpool`, `invalidateCache`.
+- `server/routes/spoolman.js` (new): proxy endpoints `GET /api/spoolman/status`, `/vendors`, `/filaments`, `/spools`, `/spools/:id`, mounted in `server/index.js`.
+- `server/routes/settings.js`: added `spoolman_enabled`/`spoolman_base_url` to `ALLOWED_KEYS` with validation; invalidates the Spoolman client's cache when the base URL changes.
+- `client/src/pages/Settings.jsx`: new "Spoolman Integration" section (enable checkbox, base URL field, connectivity indicator).
+- `client/src/locales/en.json`: added `settings.spoolman*` translation keys.
+- `docs/spoolman.md` (new), `docs/README.md`, `docs/api.md`: documented the settings keys and new endpoints.
+- `server/tests/spoolman-client.test.js`, `server/tests/spoolman-routes.test.js` (new), `server/tests/settings.test.js` (extended): all Spoolman HTTP calls mocked, never a live instance.
+
 ## 2026-08-02: document the i18n contribution rule in CONTRIBUTING.md
 
 The i18n foundation (react-i18next, `client/src/locales/en.json`, `docs/TRANSLATING.md`) landed as its own PR, but CONTRIBUTING.md's Project Conventions list was never updated to tell feature contributors about it. `docs/TRANSLATING.md` explains how to add a new language, but nothing told a contributor adding a new page or button that hardcoding a string in JSX was the wrong move in the first place. Added a load bearing convention bullet, matching the tone of the existing DB/timestamp/booleans bullets, that points new UI text at `t('namespace.key')` plus an `en.json` entry, and makes explicit that contributors are not on the hook for translating the other language files themselves.

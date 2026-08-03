@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
+const spoolman = require('../integrations/spoolman');
 
-const ALLOWED_KEYS = new Set(['dispatch_batch_size', 'farm_name']);
+const ALLOWED_KEYS = new Set(['dispatch_batch_size', 'farm_name', 'spoolman_enabled', 'spoolman_base_url']);
 
 module.exports = (db) => {
   // GET /api/settings — returns all settings as { key: value, ... }
@@ -34,7 +35,22 @@ module.exports = (db) => {
       return res.status(400).json({ error: 'farm_name must be 40 characters or fewer' });
     }
 
+    if (key === 'spoolman_enabled' && !['true', 'false'].includes(String(value))) {
+      return res.status(400).json({ error: 'spoolman_enabled must be "true" or "false"' });
+    }
+
+    if (key === 'spoolman_base_url') {
+      const v = String(value).trim();
+      if (!/^https?:\/\/.+/i.test(v)) {
+        return res.status(400).json({ error: 'spoolman_base_url must start with http:// or https://' });
+      }
+      if (v.length > 200) {
+        return res.status(400).json({ error: 'spoolman_base_url must be 200 characters or fewer' });
+      }
+    }
+
     db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, String(value));
+    if (key === 'spoolman_base_url') spoolman.invalidateCache();
     res.json({ key, value: String(value) });
   });
 

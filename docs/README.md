@@ -29,6 +29,7 @@ Prefer Docker over a local Node.js install? `docker compose up --build print-far
 | [docs/multi-brand.md](multi-brand.md) | Phase 6 design — driver abstraction for non-Prusa brands (Elegoo Centauri Carbon) |
 | [docs/driver-authoring.md](driver-authoring.md) | Connector authoring guide for manufacturers and contributors: driver contract, canonical statuses, registration checklist, hardware test matrix |
 | [docs/filaments.md](filaments.md) | Filament Library — admin-managed type and color lists, API endpoints, client usage |
+| [docs/spoolman.md](spoolman.md) | Optional Spoolman integration: settings, proxy API, and the incremental delivery status |
 | [docs/docker-publish.md](docker-publish.md) | CI workflow that builds and publishes multi-arch Docker images to GHCR |
 | [docs/TRANSLATING.md](TRANSLATING.md) | How to add a new UI language (react-i18next): key conventions and en.json as the source of truth |
 ## Project Structure

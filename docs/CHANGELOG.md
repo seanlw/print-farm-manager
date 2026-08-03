@@ -2,6 +2,19 @@
 
 ---
 
+## 2026-08-03: add a "Manage in Spoolman" link to the Filament Library section (issue #21)
+
+Requested: this app doesn't manage vendors, filaments, or spools itself, that's Spoolman's job, so the read-only Filament Library view needed a direct way to get to Spoolman's own UI for adding or editing them.
+
+Added a link next to the existing "Managed in Spoolman..." hint that opens `spoolman_base_url` in a new tab. It reuses the exact same URL the server already proxies through, on the assumption (true for any normal self-hosted Spoolman on the farm's LAN) that the address is reachable from both the server and an operator's browser.
+
+### Changes
+- `client/src/pages/Settings.jsx`: added a "Manage in Spoolman ↗" link (`target="_blank"`, `rel="noopener noreferrer"`) to the read-only Filament Library section.
+- `client/src/locales/en.json`: added `settings.spoolmanManageLink`.
+- `docs/spoolman.md`: documented the link and its reachability assumption.
+
+Verified live: clicking it opens a new tab to the exact configured base URL; separately confirmed Spoolman's own UI at that address correctly shows the farm's seeded vendor, filaments, and spools.
+
 ## 2026-08-03: fix Filament Library not refreshing after correcting the Spoolman base URL (issue #21)
 
 Reported: enabling Spoolman and having it connect successfully in Settings did not populate the Filament Library section; only a full page reload did. Root cause was in the read-only Filament Library display's own fetch effect in Settings.jsx, which is keyed on `[librarySource]` (local vs spoolman): that only fires on the actual local<->spoolman mode transition, not on a base-URL-only change. If the base URL was wrong at the moment the integration was enabled (a very ordinary sequence: check the box, see it fail, then type in the corrected URL and hit Save), `librarySource` was already `'spoolman'` by the time the URL got fixed, so the effect never re-ran and the table stayed stuck on whatever it fetched (or failed to fetch) the first time.

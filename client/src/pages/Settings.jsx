@@ -762,7 +762,17 @@ export default function Settings() {
 
         {librarySource === 'spoolman' && (
           <div>
-            <p style={{ color: '#94a3b8', fontSize: 13, marginBottom: 12 }}>{t('settings.spoolmanLibraryManagedHint')}</p>
+            <p style={{ color: '#94a3b8', fontSize: 13, marginBottom: 12 }}>
+              {t('settings.spoolmanLibraryManagedHint')}{' '}
+              <a
+                href={spoolmanBaseUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: '#3b82f6', textDecoration: 'none' }}
+              >
+                {t('settings.spoolmanManageLink')} ↗
+              </a>
+            </p>
             {spoolmanFilaments.length === 0 && (
               <p style={{ color: '#475569', fontSize: 13 }}>{t('settings.spoolmanLibraryEmptyHint')}</p>
             )}

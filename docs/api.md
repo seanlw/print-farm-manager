@@ -100,7 +100,7 @@ Returns `201` with the created printer object. Returns `409` if `name` already e
 
 ### `PUT /api/printers/:id`
 
-Partial update — only fields provided are changed (uses `COALESCE`). All fields from POST are accepted, plus `is_held` (`0` or `1`).
+Partial update: only fields provided are changed (uses `COALESCE`). All fields from POST are accepted, plus `is_held` (`0` or `1`) and `spoolman_report_usage` (boolean; see [docs/spoolman.md](spoolman.md), the per-printer opt-in for usage reporting, independent of whether a spool is bound).
 
 Returns `404` if not found, `409` on name conflict.
 
@@ -194,6 +194,26 @@ Manually associates a failed or stalled job with this printer — for record kee
 Sets `jobs.status` to `'printing'`, updates `jobs.printer_id` to this printer, sets `jobs.started_at` if not already set, and releases the printer's hold (`is_held = 0`).
 
 Returns `409` if the job is not in `failed` or `uploading` status. Returns `404` if the printer or job does not exist.
+
+### `POST /api/printers/:id/spoolman-bind`
+
+Binds a Spoolman spool to this printer and snapshots `loaded_material`/`loaded_color` from the spool's filament at bind time (not a live lookup, see [docs/spoolman.md](spoolman.md)). Requires the Spoolman integration to be enabled.
+
+**Body:** `{ "spool_id": 42 }`
+
+Returns the updated printer object. `400` if `spool_id` is missing or the integration is disabled, `404` if Spoolman reports the spool doesn't exist, `502` if Spoolman can't be reached.
+
+### `POST /api/printers/:id/spoolman-unbind`
+
+Clears `spoolman_spool_id` only: `loaded_material`/`loaded_color` keep their last-known snapshot, same as any other manual edit to those fields.
+
+Returns the updated printer object. `409` if the printer has no bound spool.
+
+### `POST /api/printers/:id/spoolman-sync`
+
+Re-fetches the currently bound spool from Spoolman and re-snapshots `loaded_material`/`loaded_color`. Manual only, not polled automatically.
+
+Returns the updated printer object. `409` if the printer has no bound spool, `400` if the integration is disabled, `404`/`502` per the bind endpoint.
 
 ### `GET /api/printers/:id/events`
 

@@ -147,6 +147,91 @@ export default function PrinterDetail() {
   useEffect(() => { fetchData(); }, [fetchData]);
   useEffect(() => { fetchJobPage(jobPage); }, [fetchJobPage, jobPage]);
 
+  // Spoolman spool binding: only relevant while the integration is enabled.
+  // Errors surface inline (spoolmanError), matching this page's existing
+  // detailsError/nameError convention rather than toasts.
+  const [spoolmanEnabled, setSpoolmanEnabled] = useState(false);
+  const [spoolmanSpools, setSpoolmanSpools]   = useState([]);
+  const [bindSpoolId, setBindSpoolId]         = useState('');
+  const [spoolmanBusy, setSpoolmanBusy]       = useState(false);
+  const [spoolmanError, setSpoolmanError]     = useState(null);
+
+  useEffect(() => {
+    fetch('/api/settings').then(r => r.json()).then(s => setSpoolmanEnabled(s.spoolman_enabled === 'true')).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!spoolmanEnabled || !printer || printer.spoolman_spool_id) return;
+    fetch('/api/spoolman/spools?allow_archived=false').then(r => (r.ok ? r.json() : [])).then(setSpoolmanSpools).catch(() => setSpoolmanSpools([]));
+  }, [spoolmanEnabled, printer]);
+
+  async function handleBindSpool() {
+    if (!bindSpoolId) return;
+    setSpoolmanBusy(true);
+    setSpoolmanError(null);
+    try {
+      const res = await fetch(`/api/printers/${id}/spoolman-bind`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spool_id: bindSpoolId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || t('printerDetail.spoolmanBindFailed'));
+      setPrinter(body);
+      setBindSpoolId('');
+    } catch (err) {
+      setSpoolmanError(err.message);
+    } finally {
+      setSpoolmanBusy(false);
+    }
+  }
+
+  async function handleUnbindSpool() {
+    setSpoolmanBusy(true);
+    setSpoolmanError(null);
+    try {
+      const res = await fetch(`/api/printers/${id}/spoolman-unbind`, { method: 'POST' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || t('printerDetail.spoolmanUnbindFailed'));
+      setPrinter(body);
+    } catch (err) {
+      setSpoolmanError(err.message);
+    } finally {
+      setSpoolmanBusy(false);
+    }
+  }
+
+  async function handleSyncSpool() {
+    setSpoolmanBusy(true);
+    setSpoolmanError(null);
+    try {
+      const res = await fetch(`/api/printers/${id}/spoolman-sync`, { method: 'POST' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || t('printerDetail.spoolmanSyncFailed'));
+      setPrinter(body);
+    } catch (err) {
+      setSpoolmanError(err.message);
+    } finally {
+      setSpoolmanBusy(false);
+    }
+  }
+
+  async function handleToggleReportUsage(checked) {
+    setSpoolmanError(null);
+    try {
+      const res = await fetch(`/api/printers/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spoolman_report_usage: checked }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || t('settings.saveFailedGeneric'));
+      setPrinter(body);
+    } catch (err) {
+      setSpoolmanError(err.message);
+    }
+  }
+
   async function submitNote(e) {
     e.preventDefault();
     if (!note.trim()) return;
@@ -428,8 +513,8 @@ export default function PrinterDetail() {
                 <select
                   value={detailsDraft.loaded_material}
                   onChange={e => setDetailsDraft(d => ({ ...d, loaded_material: e.target.value, loaded_color: '' }))}
-                  disabled={savingDetails}
-                  style={{ ...detailInputStyle, cursor: 'pointer' }}
+                  disabled={savingDetails || !!printer.spoolman_spool_id}
+                  style={{ ...detailInputStyle, cursor: printer.spoolman_spool_id ? 'not-allowed' : 'pointer' }}
                 >
                   <option value="">{t('common.noneOption')}</option>
                   {filamentTypes.map(ft => <option key={ft.id} value={ft.name}>{ft.name}</option>)}
@@ -440,8 +525,8 @@ export default function PrinterDetail() {
                 <select
                   value={detailsDraft.loaded_color}
                   onChange={e => setDetailsDraft(d => ({ ...d, loaded_color: e.target.value }))}
-                  disabled={savingDetails || !detailsDraft.loaded_material}
-                  style={{ ...detailInputStyle, cursor: detailsDraft.loaded_material ? 'pointer' : 'not-allowed' }}
+                  disabled={savingDetails || !detailsDraft.loaded_material || !!printer.spoolman_spool_id}
+                  style={{ ...detailInputStyle, cursor: (detailsDraft.loaded_material && !printer.spoolman_spool_id) ? 'pointer' : 'not-allowed' }}
                 >
                   <option value="">{t('common.noneOption')}</option>
                   {filamentColors
@@ -450,6 +535,11 @@ export default function PrinterDetail() {
                 </select>
               </label>
             </div>
+            {printer.spoolman_spool_id && (
+              <div style={{ fontSize: 12, color: '#64748b', marginTop: 6 }}>
+                {t('printerDetail.spoolmanBoundHint', { id: printer.spoolman_spool_id })}
+              </div>
+            )}
             {detailsError && (
               <div style={{ fontSize: 12, color: '#fca5a5', marginTop: 6 }}>{detailsError}</div>
             )}
@@ -520,6 +610,89 @@ export default function PrinterDetail() {
           </div>
         )}
       </div>
+
+      {/* Spoolman spool binding: only shown while the integration is enabled */}
+      {spoolmanEnabled && (
+        <div style={{
+          background: '#131720', border: '1px solid #1e2433',
+          borderRadius: 8, padding: '16px 20px', marginBottom: 24,
+        }}>
+          <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>{t('printerDetail.spoolmanTitle')}</h3>
+          {printer.spoolman_spool_id ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
+              <span style={{ color: '#94a3b8' }}>
+                {t('printerDetail.spoolmanBoundLabel', { id: printer.spoolman_spool_id })}{' '}
+                <span style={{ color: '#7dd3fc' }}>
+                  {[printer.loaded_material, printer.loaded_color].filter(Boolean).join(' · ')}
+                </span>
+              </span>
+              <button
+                onClick={handleSyncSpool}
+                disabled={spoolmanBusy}
+                style={{
+                  background: 'none', border: '1px solid #2d3748', color: '#94a3b8',
+                  borderRadius: 5, padding: '3px 10px', fontSize: 11, fontWeight: 600,
+                  cursor: spoolmanBusy ? 'not-allowed' : 'pointer', letterSpacing: '0.04em',
+                }}
+              >
+                {t('printerDetail.spoolmanSync')}
+              </button>
+              <button
+                onClick={handleUnbindSpool}
+                disabled={spoolmanBusy}
+                style={{
+                  background: 'none', border: '1px solid #7f1d1d', color: '#f87171',
+                  borderRadius: 5, padding: '3px 10px', fontSize: 11, fontWeight: 600,
+                  cursor: spoolmanBusy ? 'not-allowed' : 'pointer', letterSpacing: '0.04em',
+                }}
+              >
+                {t('printerDetail.spoolmanUnbind')}
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <select
+                value={bindSpoolId}
+                onChange={e => setBindSpoolId(e.target.value)}
+                disabled={spoolmanBusy}
+                style={{ ...detailInputStyle, width: 320, cursor: 'pointer' }}
+              >
+                <option value="">{t('printerDetail.spoolmanSelectSpool')}</option>
+                {spoolmanSpools.map(s => (
+                  <option key={s.id} value={s.id}>
+                    #{s.id}: {s.filament?.name || s.filament?.material || t('printerDetail.spoolmanUnknownFilament')}
+                    {s.remaining_weight != null ? ` (${Math.round(s.remaining_weight)}g)` : ''}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={handleBindSpool}
+                disabled={spoolmanBusy || !bindSpoolId}
+                style={{
+                  background: spoolmanBusy || !bindSpoolId ? '#1e2433' : '#1e40af',
+                  color: spoolmanBusy || !bindSpoolId ? '#475569' : '#fff',
+                  border: 'none', borderRadius: 5,
+                  padding: '6px 14px', fontSize: 13, fontWeight: 600,
+                  cursor: spoolmanBusy || !bindSpoolId ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {t('printerDetail.spoolmanBind')}
+              </button>
+            </div>
+          )}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginTop: 14, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={!!printer.spoolman_report_usage}
+              onChange={e => handleToggleReportUsage(e.target.checked)}
+            />
+            {t('printerDetail.spoolmanReportUsageLabel')}
+          </label>
+          {spoolmanError && (
+            <div style={{ marginTop: 10, fontSize: 12, color: '#fca5a5' }}>{spoolmanError}</div>
+          )}
+        </div>
+      )}
 
       {/* Stats card */}
       {stats && (

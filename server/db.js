@@ -111,6 +111,8 @@ try { db.exec('ALTER TABLE gcodes ADD COLUMN file_size INTEGER'); } catch (_) {}
 try { db.exec('ALTER TABLE gcodes ADD COLUMN filament_used_grams REAL'); } catch (_) {}
 try { db.exec('ALTER TABLE gcodes ADD COLUMN filament_used_mm REAL'); } catch (_) {}
 try { db.exec('ALTER TABLE projects ADD COLUMN allowed_groups TEXT'); } catch (_) {}
+try { db.exec('ALTER TABLE printers ADD COLUMN spoolman_spool_id INTEGER'); } catch (_) {}
+try { db.exec('ALTER TABLE printers ADD COLUMN spoolman_report_usage INTEGER DEFAULT 0'); } catch (_) {}
 
 // Printer models — source of truth for which models this farm supports.
 // New installs start empty; operator adds models in Settings.

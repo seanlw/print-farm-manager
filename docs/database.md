@@ -37,7 +37,9 @@ CREATE TABLE IF NOT EXISTS printers (
   job_name            TEXT,                      -- filename of current print job (PRINTING only)
   job_progress        REAL,                      -- 0–100 from PrusaLink (PRINTING only)
   job_time_remaining  INTEGER,                   -- seconds remaining (PRINTING only)
-  created_at          INTEGER NOT NULL           -- Unix epoch ms
+  created_at          INTEGER NOT NULL,          -- Unix epoch ms
+  spoolman_spool_id      INTEGER,                -- bound Spoolman spool id (see docs/spoolman.md); NULL = unbound
+  spoolman_report_usage  INTEGER DEFAULT 0        -- 1 = report print usage to Spoolman on completion (opt-in, avoids double-counting on printers that already report natively)
 );
 ```
 

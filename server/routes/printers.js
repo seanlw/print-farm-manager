@@ -5,6 +5,7 @@ const axios = require('axios');
 const router = express.Router();
 const events = require('../events');
 const { dropConnection } = require('../drivers');
+const spoolman = require('../integrations/spoolman');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -154,7 +155,7 @@ module.exports = (db) => {
     const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id);
     if (!printer) return res.status(404).json({ error: 'Printer not found' });
 
-    const { name, ip, api_key, serial_number, group_name, type, model, is_held, decommission_note, loaded_material, loaded_color } = req.body;
+    const { name, ip, api_key, serial_number, group_name, type, model, is_held, decommission_note, loaded_material, loaded_color, spoolman_report_usage } = req.body;
     let normalized = undefined;
     if (model !== undefined) {
       normalized = normalizeModel(model);
@@ -166,6 +167,7 @@ module.exports = (db) => {
     // loaded_material / loaded_color: if key is present in body, use the value (even if empty → null to clear)
     const newMaterial = 'loaded_material' in req.body ? (loaded_material || null) : printer.loaded_material;
     const newColor    = 'loaded_color'    in req.body ? (loaded_color    || null) : printer.loaded_color;
+    const newReportUsage = 'spoolman_report_usage' in req.body ? (spoolman_report_usage ? 1 : 0) : printer.spoolman_report_usage;
 
     // Compute effective new values for all tracked fields (COALESCE: body wins, else keep existing)
     const after = {
@@ -177,12 +179,14 @@ module.exports = (db) => {
       serial_number:   serial_number !== undefined ? serial_number : printer.serial_number,
       loaded_material: newMaterial,
       loaded_color:    newColor,
+      spoolman_report_usage: newReportUsage,
     };
 
     const FIELD_LABELS = {
       name: 'Name', ip: 'IP address', group_name: 'Group', type: 'Connector type',
       model: 'Model', serial_number: 'Serial number',
       loaded_material: 'Material', loaded_color: 'Color',
+      spoolman_report_usage: 'Spoolman usage reporting',
     };
 
     try {
@@ -198,10 +202,11 @@ module.exports = (db) => {
             is_held = COALESCE(?, is_held),
             decommission_note = COALESCE(?, decommission_note),
             loaded_material = ?,
-            loaded_color = ?
+            loaded_color = ?,
+            spoolman_report_usage = ?
         WHERE id = ?
       `).run(name, ip, api_key, serial_number, group_name, type, normalized, is_held, decommission_note ?? null,
-             newMaterial, newColor, req.params.id);
+             newMaterial, newColor, newReportUsage, req.params.id);
 
       // Best-effort convenience: a failure here must never turn an already-
       // committed printer update into a reported error.
@@ -214,7 +219,7 @@ module.exports = (db) => {
         const oldVal = printer[field] ?? null;
         const newVal = after[field]   ?? null;
         if (oldVal !== newVal) {
-          const fmt = v => (v == null ? '(none)' : v);
+          const fmt = v => (field === 'spoolman_report_usage' ? (v ? 'on' : 'off') : (v == null ? '(none)' : v));
           events.insert(printer.id, 'info_changed', `${label}: ${fmt(oldVal)} → ${fmt(newVal)}`);
         }
       }
@@ -226,6 +231,90 @@ module.exports = (db) => {
       }
       throw err;
     }
+  });
+
+  // Derive { material, color } from a Spoolman Spool object's nested Filament.
+  // color_hex arrives without a leading '#' (Spoolman convention); this app's own
+  // filament_colors.hex_color is stored with one, so the leading '#' is added here
+  // to keep the two consistent wherever a Spoolman color reaches loaded_color.
+  function materialColorFromSpool(spool) {
+    const material = spool.filament?.material || null;
+    const color = spool.filament?.color_hex ? '#' + spool.filament.color_hex.toUpperCase() : null;
+    return { material, color };
+  }
+
+  // POST /api/printers/:id/spoolman-bind: bind a Spoolman spool to this printer,
+  // snapshotting loaded_material/loaded_color from the spool's filament at bind time
+  // (not a live lookup, see docs/spoolman.md for why: the scheduler's dispatch
+  // reservation is deliberately synchronous with no I/O, and stays that way).
+  router.post('/:id/spoolman-bind', async (req, res) => {
+    const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id);
+    if (!printer) return res.status(404).json({ error: 'Printer not found' });
+
+    const spoolId = parseInt(req.body?.spool_id, 10);
+    if (!spoolId) return res.status(400).json({ error: 'spool_id is required' });
+    if (!spoolman.isEnabled(db)) {
+      return res.status(400).json({ error: 'Spoolman integration is not enabled' });
+    }
+
+    let spool;
+    try {
+      spool = await spoolman.getSpool(db, spoolId);
+    } catch (err) {
+      if (err.response?.status === 404) return res.status(404).json({ error: 'Spool not found in Spoolman' });
+      return res.status(502).json({ error: `Could not reach Spoolman: ${err.message}` });
+    }
+
+    const { material, color } = materialColorFromSpool(spool);
+    db.prepare(
+      'UPDATE printers SET spoolman_spool_id = ?, loaded_material = ?, loaded_color = ? WHERE id = ?'
+    ).run(spoolId, material, color, printer.id);
+    events.insert(printer.id, 'info_changed',
+      `Bound to Spoolman spool #${spoolId} (${material || 'unknown material'}${color ? ', ' + color : ''})`);
+
+    res.json(db.prepare('SELECT * FROM printers WHERE id = ?').get(printer.id));
+  });
+
+  // POST /api/printers/:id/spoolman-unbind: clear the bound spool only.
+  // loaded_material/loaded_color keep their last snapshot rather than being cleared,
+  // matching how any other manual edit to those fields behaves: unbinding should not
+  // silently change what the scheduler currently thinks is loaded.
+  router.post('/:id/spoolman-unbind', (req, res) => {
+    const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id);
+    if (!printer) return res.status(404).json({ error: 'Printer not found' });
+    if (!printer.spoolman_spool_id) return res.status(409).json({ error: 'Printer has no bound spool' });
+
+    db.prepare('UPDATE printers SET spoolman_spool_id = NULL WHERE id = ?').run(printer.id);
+    events.insert(printer.id, 'info_changed', `Unbound from Spoolman spool #${printer.spoolman_spool_id}`);
+
+    res.json(db.prepare('SELECT * FROM printers WHERE id = ?').get(printer.id));
+  });
+
+  // POST /api/printers/:id/spoolman-sync: re-fetch the currently bound spool and
+  // re-snapshot loaded_material/loaded_color. Manual only, not folded into the 15s
+  // poller: entangling two independently-failing systems' error handling for
+  // something that changes rarely isn't worth it (see docs/spoolman.md).
+  router.post('/:id/spoolman-sync', async (req, res) => {
+    const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id);
+    if (!printer) return res.status(404).json({ error: 'Printer not found' });
+    if (!printer.spoolman_spool_id) return res.status(409).json({ error: 'Printer has no bound spool' });
+    if (!spoolman.isEnabled(db)) {
+      return res.status(400).json({ error: 'Spoolman integration is not enabled' });
+    }
+
+    let spool;
+    try {
+      spool = await spoolman.getSpool(db, printer.spoolman_spool_id);
+    } catch (err) {
+      if (err.response?.status === 404) return res.status(404).json({ error: 'Spool not found in Spoolman' });
+      return res.status(502).json({ error: `Could not reach Spoolman: ${err.message}` });
+    }
+
+    const { material, color } = materialColorFromSpool(spool);
+    db.prepare('UPDATE printers SET loaded_material = ?, loaded_color = ? WHERE id = ?').run(material, color, printer.id);
+    events.insert(printer.id, 'info_changed', `Synced from Spoolman spool #${printer.spoolman_spool_id}`);
+
+    res.json(db.prepare('SELECT * FROM printers WHERE id = ?').get(printer.id));
   });
 
   // DELETE /api/printers/:id (permanently remove a decommissioned printer)

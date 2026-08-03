@@ -106,12 +106,19 @@ async function reportJobUsage(db, jobId) {
   if (!spoolId) return { ok: false, reason: 'not-bound' };
 
   const gcode = job.gcode_id
-    ? db.prepare('SELECT filament_used_grams, parts_per_plate FROM gcodes WHERE id = ?').get(job.gcode_id)
+    ? db.prepare('SELECT filament_used_grams, filament_used_mm, parts_per_plate FROM gcodes WHERE id = ?').get(job.gcode_id)
     : null;
-  // filament_used_grams is only ever written by parseFilamentUsage (server/gcode-decode.js)
-  // reading the sliced file's own metadata, never operator-typed like material_grams is,
-  // which is what makes this the field that satisfies "not a guessed number".
-  if (!gcode || gcode.filament_used_grams == null || !gcode.parts_per_plate) {
+  // filament_used_grams/filament_used_mm are only ever written by parseFilamentUsage
+  // (server/gcode-decode.js) reading the sliced file's own metadata, never operator-typed
+  // like material_grams is, which is what makes these the fields that satisfy "not a
+  // guessed number". Weight is preferred when present; length is a fallback for slicers
+  // that only embed a length estimate (e.g. Cura's "Filament used: Xm" header has no grams
+  // line at all). Converting mm to grams here would need the filament's diameter and
+  // density, neither of which this app stores anywhere (filament_types/filament_colors only
+  // carry a name and a hex color) -- Spoolman already has the real density on file for the
+  // bound spool (its own use_length handler converts internally the same way), so use_length
+  // lets Spoolman do that conversion instead of this code guessing a density.
+  if (!gcode || !gcode.parts_per_plate || (gcode.filament_used_grams == null && gcode.filament_used_mm == null)) {
     notifications.add(
       `Spoolman usage not reported for job ${jobId}: its G-code has no parsed filament usage yet (open it in the 3D viewer, or use "Parse G-code", then it will be picked up on the next finish).`
     );
@@ -120,15 +127,18 @@ async function reportJobUsage(db, jobId) {
 
   // job.parts_per_plate is frozen at dispatch time; gcode.parts_per_plate is the
   // current live value. Same proration shape as the dashboard's per-job material
-  // stat (server/routes/dashboard.js), just reading filament_used_grams instead
-  // of the operator-editable material_grams.
-  const grams = Math.round(job.parts_per_plate * (gcode.filament_used_grams / gcode.parts_per_plate) * 100) / 100;
+  // stat (server/routes/dashboard.js), just reading filament_used_grams/filament_used_mm
+  // instead of the operator-editable material_grams.
+  const usesWeight = gcode.filament_used_grams != null;
+  const amount = Math.round(
+    job.parts_per_plate * ((usesWeight ? gcode.filament_used_grams : gcode.filament_used_mm) / gcode.parts_per_plate) * 100
+  ) / 100;
 
   const cfg = getConfig(db);
   try {
     await axios.put(
       `${cfg.baseUrl}/api/v1/spool/${encodeURIComponent(spoolId)}/use`,
-      { use_weight: grams },
+      usesWeight ? { use_weight: amount } : { use_length: amount },
       { timeout: REQUEST_TIMEOUT_MS }
     );
   } catch (err) {
@@ -136,7 +146,7 @@ async function reportJobUsage(db, jobId) {
   }
 
   db.prepare('UPDATE jobs SET spoolman_reported_at = ? WHERE id = ?').run(Date.now(), jobId);
-  return { ok: true, grams };
+  return usesWeight ? { ok: true, grams: amount } : { ok: true, mm: amount };
 }
 
 module.exports = {

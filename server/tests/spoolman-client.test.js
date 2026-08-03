@@ -28,7 +28,8 @@ beforeEach(() => {
     CREATE TABLE gcodes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       parts_per_plate INTEGER,
-      filament_used_grams REAL
+      filament_used_grams REAL,
+      filament_used_mm REAL
     );
     CREATE TABLE jobs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -165,10 +166,11 @@ describe('reportJobUsage', () => {
 
   function seedGcode(overrides = {}) {
     return db.prepare(
-      'INSERT INTO gcodes (parts_per_plate, filament_used_grams) VALUES (?, ?)'
+      'INSERT INTO gcodes (parts_per_plate, filament_used_grams, filament_used_mm) VALUES (?, ?, ?)'
     ).run(
       overrides.parts_per_plate ?? 4,
-      'filament_used_grams' in overrides ? overrides.filament_used_grams : 40
+      'filament_used_grams' in overrides ? overrides.filament_used_grams : 40,
+      overrides.filament_used_mm ?? null
     ).lastInsertRowid;
   }
 
@@ -275,6 +277,40 @@ describe('reportJobUsage', () => {
 
       const result = await spoolman.reportJobUsage(db, jobId);
       expect(result).toEqual({ ok: false, reason: 'no-parsed-usage' });
+    });
+
+    test('use_length fallback: gcode has only filament_used_mm (e.g. Cura, no grams line), PUTs use_length', async () => {
+      const printerId = seedPrinter({ spoolman_spool_id: 7 });
+      const gcodeId    = seedGcode({ parts_per_plate: 4, filament_used_grams: null, filament_used_mm: 200 });
+      const jobId      = seedJob(printerId, gcodeId, { spoolman_spool_id: 7, parts_per_plate: 4 });
+      axios.put.mockResolvedValueOnce({ data: {} });
+
+      const result = await spoolman.reportJobUsage(db, jobId);
+
+      expect(result).toEqual({ ok: true, mm: 200 });
+      expect(axios.put).toHaveBeenCalledWith(
+        'http://spoolman.local:7912/api/v1/spool/7/use',
+        { use_length: 200 },
+        expect.objectContaining({ timeout: 8000 })
+      );
+      const job = db.prepare('SELECT spoolman_reported_at FROM jobs WHERE id = ?').get(jobId);
+      expect(job.spoolman_reported_at).toEqual(expect.any(Number));
+    });
+
+    test('prefers filament_used_grams over filament_used_mm when both are present', async () => {
+      const printerId = seedPrinter({ spoolman_spool_id: 7 });
+      const gcodeId    = seedGcode({ parts_per_plate: 4, filament_used_grams: 40, filament_used_mm: 200 });
+      const jobId      = seedJob(printerId, gcodeId, { spoolman_spool_id: 7, parts_per_plate: 4 });
+      axios.put.mockResolvedValueOnce({ data: {} });
+
+      const result = await spoolman.reportJobUsage(db, jobId);
+
+      expect(result).toEqual({ ok: true, grams: 40 });
+      expect(axios.put).toHaveBeenCalledWith(
+        'http://spoolman.local:7912/api/v1/spool/7/use',
+        { use_weight: 40 },
+        expect.anything()
+      );
     });
 
     test('success: PUTs the exact use_weight payload and marks the job reported', async () => {

@@ -13,7 +13,7 @@ This is being built incrementally, in independently-working chunks:
 1. **Settings + read-only library proxy**: enable/disable, base URL, a server-side proxy so the browser never talks to Spoolman directly, and a connectivity status check.
 2. **Filament Library UI switch**: every material/color picker on the farm, and the Settings Filament Library section itself, source from Spoolman instead of the local library while enabled. See `docs/filaments.md`'s "Spoolman mode" section.
 3. **Loaded-spool binding**: bind a specific Spoolman spool to a printer; `loaded_material`/`loaded_color` are derived from it. See "Loaded-spool binding" below.
-4. **Usage tracking** (this chunk): reports consumed grams to Spoolman on print completion. See "Usage tracking" below.
+4. **Usage tracking** (this chunk): reports consumed weight (or length, as a fallback) to Spoolman on print completion. See "Usage tracking" below.
 
 ## Settings
 
@@ -39,7 +39,7 @@ The server-side client module. Every exported function checks `isEnabled(db)` fi
 | `listFilaments(db)` | `GET /api/v1/filament` | Cached 60s. |
 | `listSpools(db, query)` | `GET /api/v1/spool` | Query params passed through; cached 60s per distinct query. |
 | `getSpool(db, id)` | `GET /api/v1/spool/:id` | Never cached (callers that bind a spool need the freshest data). |
-| `reportJobUsage(db, jobId)` | `PUT /api/v1/spool/:id/use` | Reports a finished job's consumed grams, once. See "Usage tracking" below. |
+| `reportJobUsage(db, jobId)` | `PUT /api/v1/spool/:id/use` | Reports a finished job's consumed weight, once (falls back to length when the G-code has no parsed weight). See "Usage tracking" below. |
 
 All requests use an 8 second timeout, matching this codebase's existing driver convention.
 
@@ -89,7 +89,7 @@ Three new `printers.js` action endpoints, documented in full in `docs/api.md`: `
 
 ## Usage tracking
 
-On print completion, reports the grams actually consumed to Spoolman via `PUT /api/v1/spool/:id/use` (`{ use_weight: grams }`), so the spool's remaining weight in Spoolman stays accurate. This is the only part of the integration that touches code paths adjacent to `parts.completed_qty`, so it's worth being explicit: **it never does.** `reportJobUsage` is called strictly *after* the existing credit statement in every hook point, reads state that already exists, and its outcome only ever affects a log line, a notification, or a `spoolman_warning` response field, never a `parts`/`jobs` quantity or status.
+On print completion, reports the usage actually consumed to Spoolman via `PUT /api/v1/spool/:id/use`, so the spool's remaining weight in Spoolman stays accurate. This is the only part of the integration that touches code paths adjacent to `parts.completed_qty`, so it's worth being explicit: **it never does.** `reportJobUsage` is called strictly *after* the existing credit statement in every hook point, reads state that already exists, and its outcome only ever affects a log line, a notification, or a `spoolman_warning` response field, never a `parts`/`jobs` quantity or status.
 
 Two new columns on `jobs` (additive): `spoolman_spool_id` (a snapshot of the bound spool at dispatch time, same rationale as `parts_per_plate`'s own snapshot) and `spoolman_reported_at` (set once usage has been reported for that job; the idempotency guard).
 
@@ -100,17 +100,22 @@ Two new columns on `jobs` (additive): `spoolman_spool_id` (a snapshot of the bou
 3. `already-reported`: `spoolman_reported_at` is already set. Safe to call any number of times for the same job.
 4. `opted-out`: the printer's `spoolman_report_usage` is off. This is the double-counting guard the issue itself asked for: a printer that already reports its own usage to Spoolman natively (e.g. Klipper/Moonraker) should not also get decremented by this app. Off by default; the operator opts a printer in via the checkbox in PrinterDetail's Spoolman Spool card.
 5. `not-bound`: neither the job's snapshot nor the printer's current binding has a spool id.
-6. `no-parsed-usage`: the job's G-code has no `filament_used_grams` yet (never opened in the 3D viewer, never "Parse G-code"d). A passive notification is added; this isn't operator-actionable at the moment the job finishes, so it's not surfaced as a warning.
+6. `no-parsed-usage`: the job's G-code has neither `filament_used_grams` nor `filament_used_mm` yet (never opened in the 3D viewer, never "Parse G-code"d, or sliced by something `parseFilamentUsage` doesn't recognize at all). A passive notification is added; this isn't operator-actionable at the moment the job finishes, so it's not surfaced as a warning.
 7. `http-error`: the PUT to Spoolman failed. `error` holds the message.
-8. success: `{ ok: true, grams }`, and `jobs.spoolman_reported_at` is set.
+8. success: `{ ok: true, grams }` (weight reported) or `{ ok: true, mm }` (length reported), and `jobs.spoolman_reported_at` is set.
 
-**The grams formula reads `gcodes.filament_used_grams`, never `material_grams`.** This is deliberate: `material_grams` is a plain form field the operator can type by hand via `PUT /api/gcodes/:id`; `filament_used_grams` is written only by `parseFilamentUsage` (`server/gcode-decode.js`) reading the sliced file's own metadata. The user's requirement was "not a guessed number", and `filament_used_grams` is the one field that can never contain a human's guess.
+**The formula reads `gcodes.filament_used_grams`/`filament_used_mm`, never `material_grams`.** This is deliberate: `material_grams` is a plain form field the operator can type by hand via `PUT /api/gcodes/:id`; `filament_used_grams`/`filament_used_mm` are written only by `parseFilamentUsage` (`server/gcode-decode.js`) reading the sliced file's own metadata. The user's requirement was "not a guessed number", and these are the only fields that can never contain a human's guess.
 
 ```
-grams = job.parts_per_plate * (gcode.filament_used_grams / gcode.parts_per_plate)
+usesWeight = gcode.filament_used_grams != null
+amount = job.parts_per_plate * ((usesWeight ? filament_used_grams : filament_used_mm) / gcode.parts_per_plate)
 ```
 
 `job.parts_per_plate` is frozen at dispatch; `gcode.parts_per_plate` is the current live value. Same proration shape as the dashboard's existing per-job material stat (`server/routes/dashboard.js`), just a different source column.
+
+**Weight is preferred; length is a fallback for slicers that never emit a grams line at all.** `parseFilamentUsage` only recognizes the `total filament used [g]`/`[mm]` comment format shared by PrusaSlicer, SuperSlicer, and OrcaSlicer. Cura's default header (`;Filament used: 1.20047m`) carries length only, and Bambu Studio's native gcode metadata has historically not carried either in a form this parser recognizes (there's an open community request on Bambu's own forum asking for it to be added). For gcode from any of those, `filament_used_grams` is null but `filament_used_mm` may still be set, and `reportJobUsage` sends `use_length` instead of `use_weight` in that case.
+
+**This app deliberately never converts mm to grams itself.** That conversion needs the filament's diameter and density (`weight = length * pi * (diameter/2)^2 * density`, the same formula Spoolman's own `use_length` handler uses internally, confirmed in `spoolman/database/spool.py`), and this app stores neither anywhere: `filament_types`/`filament_colors` hold only a name and a hex color. Guessing a density (even a reasonable-looking default for the material) would reintroduce exactly the "guessed number" problem `filament_used_grams` was chosen to avoid in the first place. Spoolman already has the correct density on file for the bound spool's filament record, since it's the same value Spoolman uses for its own internal conversion, so sending `use_length` lets Spoolman do that math with data it actually has.
 
 **Hook points, all strictly after the existing `completed_qty` credit:**
 

@@ -5,7 +5,7 @@
 # apply patches/sdcp+0.5.4.patch to node_modules/sdcp, and so the `dev` stage
 # below (which needs jest/supertest/vite etc.) can reuse this layer instead of
 # repeating the apt-get/npm ci work.
-FROM node:22-bookworm-slim AS deps
+FROM node:25-bookworm-slim AS deps
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 make g++ \
@@ -20,7 +20,7 @@ FROM deps AS server-deps
 RUN npm prune --omit=dev
 
 # ---- Stage 2: build the React client ---------------------------------------
-FROM node:22-bookworm-slim AS client-build
+FROM node:25-bookworm-slim AS client-build
 WORKDIR /app/client
 COPY client/package.json client/package-lock.json ./
 RUN npm ci
@@ -28,7 +28,7 @@ COPY client/ ./
 RUN npm run build
 
 # ---- Stage 3: production runtime -------------------------------------------
-FROM node:22-bookworm-slim AS runtime
+FROM node:25-bookworm-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 

@@ -1,6 +1,6 @@
 # CLAUDE.md: Print Farm Manager Operating Manual
 
-Print Farm Manager runs a real fleet of 50+ printers (Prusa, Bambu, Elegoo, Klipper, OctoPrint) and has been public open source since v1.0.0 (github.com/joeltelling/print-farm-manager). This checkout is the seanlw/print-farm-manager fork. It carries its own CI, Dependabot config, and dependency updates, and merges upstream changes by hand (see "Merging upstream" below). Two consequences shape every decision:
+Print Farm Manager runs a real fleet of 50+ printers (Prusa, Bambu, Elegoo, Klipper, OctoPrint) and has been public open source since v1.0.0, created by Joel Telling at github.com/joeltelling/print-farm-manager. This checkout is the seanlw/print-farm-manager fork; it carries its own CI, Dependabot config, and dependency updates, independent of upstream, and merges upstream changes by hand (see "Merging upstream" below). Two consequences shape every decision:
 
 1. Correctness bugs land on physical hardware. A bad dispatch or a double-credited part count wastes plastic, printer hours, and operator trust.
 2. Docs are a product surface. Strangers self-install from README.md and docs/installation.md, and community contributors build drivers from docs/driver-authoring.md.

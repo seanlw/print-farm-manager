@@ -34,7 +34,7 @@ Full suite passes in the Docker dev container, and the client production build s
 - `client/tests/routes-smoke.test.jsx`, `client/tests/helpers/fixtures.js`: Print Queue, Schedule and Part audit routes, their fixtures, and the `confirm_*` fields on printers.
 - `docs/README.md`, `docs/api.md`, `docs/web-app.md`, `docs/driver-authoring.md`: conflicts resolved to describe the merged behavior. `docs/database.md`: the dry-run script honors `PFM_DATA_DIR`.
 - `docs/CHANGELOG.md`: upstream entries moved to the top, a stray duplicated heading from the union merge removed.
-- `CLAUDE.md`: the fork description no longer says upstream is inactive; new "Merging upstream" section.
+- `CLAUDE.md`: new "Merging upstream" section, linked from the fork description.
 
 ## 2026-09-30: Print Queue page under Fleet
 

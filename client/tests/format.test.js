@@ -15,6 +15,10 @@ import {
   formatMaterial,
   formatDurationForInput,
   formatMaterialForInput,
+  formatHourMinute,
+  formatScheduleHourLabel,
+  formatBlockDuration,
+  formatAuditTimestamp,
 } from '../src/lib/format.js';
 
 // A stand-in for i18next's t(): returns the key plus its interpolation values, so a test can
@@ -224,5 +228,39 @@ describe('input pre-fill formatters', () => {
     expect(formatMaterialForInput(1000)).toBe('1kg');
     expect(formatMaterialForInput(1200)).toBe('1.2kg');
     expect(formatMaterialForInput(1250)).toBe('1.25kg');
+  });
+});
+
+describe('Schedule page formatters', () => {
+  it('formatHourMinute shows hours and minutes in the formatting locale', () => {
+    expect(norm(formatHourMinute(SEP_19_2026_1504, 'en-GB'))).toBe('15:04');
+    expect(norm(formatHourMinute(SEP_19_2026_1504, 'en-US'))).toBe('03:04 PM');
+  });
+
+  it('formatScheduleHourLabel marks the date only at midnight', () => {
+    expect(norm(formatScheduleHourLabel(Date.UTC(2026, 8, 20, 0, 0, 0), 'en-US'))).toBe('Sep 20');
+    expect(norm(formatScheduleHourLabel(Date.UTC(2026, 8, 20, 0, 0, 0), 'en-GB'))).toBe('20 Sept');
+    expect(norm(formatScheduleHourLabel(Date.UTC(2026, 8, 19, 15, 0, 0), 'en-US'))).toBe('3 PM');
+    expect(norm(formatScheduleHourLabel(Date.UTC(2026, 8, 19, 15, 0, 0), 'en-GB'))).toBe('15');
+  });
+
+  it('formatBlockDuration rounds to whole minutes and rolls 60 minutes into the hour', () => {
+    expect(formatBlockDuration(45 * 60, t)).toBe('common.durationMinutes|{"m":45}');
+    expect(formatBlockDuration(2 * 3600, t)).toBe('common.durationHours|{"h":2}');
+    expect(formatBlockDuration(2 * 3600 + 15 * 60 + 20, t)).toBe('common.durationHoursMinutes|{"h":2,"m":15}');
+    expect(formatBlockDuration(3600 - 10, t)).toBe('common.durationHours|{"h":1}');
+    expect(formatBlockDuration(0, t)).toBe('common.durationMinutes|{"m":0}');
+  });
+});
+
+describe('formatAuditTimestamp (part audit page)', () => {
+  it('omits the year for the current year and shows it otherwise', () => {
+    const now = Date.UTC(2026, 9, 9, 12, 0, 0);
+    expect(norm(formatAuditTimestamp(SEP_19_2026_1504, 'en-US', now))).toBe('Sep 19, 03:04 PM');
+    expect(norm(formatAuditTimestamp(Date.UTC(2025, 8, 19, 15, 4, 5), 'en-US', now))).toBe('Sep 19, 2025, 03:04 PM');
+  });
+
+  it('returns the placeholder for a missing timestamp', () => {
+    expect(formatAuditTimestamp(null, 'en-US')).toBe(EMPTY_PLACEHOLDER);
   });
 });

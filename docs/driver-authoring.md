@@ -49,13 +49,14 @@ deleteFile(printer, filename)
     are swallowed by the caller.
 
 dropConnection(printerId)
-  → if your driver holds a persistent connection (see the pattern below),
-    export this to close it and remove it from your module-level Map. The
-    registry (server/drivers/index.js) calls it through printers.js whenever
-    a printer is decommissioned or deleted, so a stateful driver doesn't
-    keep reconnecting to hardware nobody expects to answer. Stateless
-    request/response drivers (Prusa, Klipper, OctoPrint) have no connection
-    to drop and should not export this.
+  → REQUIRED for persistent-connection drivers, not used by stateless ones.
+    Close and forget any cached client for this printer id. The routes layer
+    calls it (via the registry's dropConnection(type, printerId)) whenever an
+    operator edits a printer's ip, api_key, serial_number, or type, and when
+    a printer is deleted or decommissioned. Without it, a cached client keeps
+    reconnecting with the credentials it was created with until the server
+    restarts, and a deleted row's client reconnects forever. Must be a no-op
+    for an id with no cached connection.
 ```
 
 ### The `printer` row
@@ -212,6 +213,6 @@ Automated tests with mocked networks catch mapping bugs; they cannot catch a pro
 | `octoprint.js` | Stateless HTTP | The cleanest recent example; synthesized FINISHED detection |
 | `prusa.js` | Stateless HTTP | UPLOAD_CONFLICT handling, pre-delete before upload |
 | `klipper.js` | Stateless HTTP | Fixed non-80 port convention |
-| `bambu.js` | Persistent (MQTT) | Connection Map, cached push state, partial-update merging, STOPPED/ERROR disambiguation, optional `deleteFile` |
+| `bambu.js` | Persistent (MQTT) | Connection Map, cached push state, partial-update merging, STOPPED/ERROR disambiguation, optional `deleteFile`, `dropConnection` |
 | `elegoo-centauri.js` | Persistent (WebSocket) | Request/response correlation over a socket |
 | `elegoo-centauri2.js` | Persistent (MQTT) + chunked HTTP upload | Mixed-transport protocols |

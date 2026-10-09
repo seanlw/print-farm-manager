@@ -29,6 +29,7 @@ Prefer Docker over a local Node.js install? `docker compose up --build print-far
 | [docs/database.md](database.md) | SQLite schema: all tables, column types, conventions, migrations |
 | [docs/poller.md](poller.md) | Printer polling loop, concurrency model, event emissions |
 | [docs/api.md](api.md) | All REST endpoints: request/response shapes, error codes |
+| [docs/schedule.md](schedule.md) | Forward schedule: projection engine, operator model (changeover and staffed hours), estimate precedence, freshness fingerprint |
 | [docs/web-app.md](web-app.md) | React client: pages, routing, layout, live-update pattern, internationalization |
 | [docs/CHANGELOG.md](CHANGELOG.md) | Dated log of all implemented features and changes |
 | [docs/multi-brand.md](multi-brand.md) | Phase 6 design: driver abstraction for non-Prusa brands |
@@ -46,8 +47,16 @@ print-farm-manager/
 ├── server/
 │   ├── index.js            # Express entry point; also hosts the set-ready / recommission endpoints
 │   ├── db.js               # SQLite connection + schema init + startup migrations
+│   ├── partLedger.js       # Part quantity ledger: every completed_qty change + audit trail
+│   ├── confirmCount.js     # Which finished job an operator's good-part count corrects
 │   ├── poller.js           # Printer polling loop (EventEmitter)
 │   ├── scheduler.js        # Job dispatch engine (EventEmitter)
+│   ├── candidate-query.js  # Dispatch eligibility predicate, shared by scheduler + projection
+│   ├── projection.js       # Forward schedule projection (read-only)
+│   ├── schedule-state.js   # Fingerprint of the schedule's inputs (client freshness)
+│   ├── slicer-metadata.js  # Print time + weight read from .3mf / .gcode at upload
+│   ├── zip-reader.js       # Minimal ZIP reader (a .3mf is a ZIP), no dependency
+│   ├── estimate-input.js   # Shared "2h15m" / "45g" parsers for parts + gcodes routes
 │   ├── events.js           # Printer event log helper: insert(printerId, type, note)
 │   ├── notifications.js    # In-memory operator alert store
 │   ├── backup.js           # Hourly automatic database snapshots (24 kept)
@@ -58,12 +67,14 @@ print-farm-manager/
 │   │                       #   elegoo-centauri, elegoo-centauri2, klipper, octoprint
 │   ├── integrations/
 │   │   └── spoolman.js     # Optional Spoolman API client (off by default)
+│   ├── scripts/
+│   │   └── audit-dry-run.js # Part ledger dry run on a DB snapshot + reconciliation check
 │   ├── routes/
 │   │   ├── printers.js     # CRUD + CSV import + decommission/recommission
 │   │   ├── printer-jobs.js # Per-printer lifetime job stats
 │   │   ├── events.js       # GET/POST /api/printers/:id/events
 │   │   ├── projects.js     # Project CRUD + complete/reactivate/reorder
-│   │   ├── parts.js        # Part CRUD + completed_qty state machine + reorder
+│   │   ├── parts.js        # Part CRUD + completed_qty state machine + reorder + queue + audit
 │   │   ├── gcodes.js       # G-code upload, preview, parse-filename, delete
 │   │   ├── jobs.js         # Job listing, filtering, cancel
 │   │   ├── models.js       # Printer model registry CRUD
@@ -72,6 +83,7 @@ print-farm-manager/
 │   │   ├── spoolman.js     # Spoolman proxy endpoints
 │   │   ├── settings.js     # Key/value operator settings
 │   │   ├── backup.js       # Farm export + restore
+│   │   ├── schedule.js     # Forward schedule projection + freshness version
 │   │   └── dashboard.js    # TV command center: single-endpoint fleet summary
 │   └── tests/              # Jest + supertest suites (in-memory SQLite, mocked transports)
 ├── client/
@@ -86,13 +98,16 @@ print-farm-manager/
 │   │   ├── components/              # Shared components (EmptyState, PollTimer)
 │   │   └── pages/
 │   │       ├── Fleet.jsx            # Live printer grid
+│   │       ├── PrintQueue.jsx       # Open parts in dispatch order + matching printers
 │   │       ├── Printers.jsx         # All-printers directory
 │   │       ├── PrinterDetail.jsx    # Per-printer event timeline + notes
 │   │       ├── Decommissioned.jsx   # Decommissioned printers + recommission
 │   │       ├── Settings.jsx         # CSV import, add printer, models, groups, filaments, Spoolman, backup
 │   │       ├── Dashboard.jsx        # Fleet summary (TV mode)
 │   │       ├── Projects.jsx         # Project/Part/G-code management
-│   │       └── Jobs.jsx             # Job queue table
+│   │       ├── PartAudit.jsx        # How a part's printed total was built (ledger timeline)
+│   │       ├── Jobs.jsx             # Job queue table (what already happened)
+│   │       └── Schedule.jsx         # Forward schedule (what happens next)
 ├── docs/                 # This folder
 ├── .github/
 │   ├── dependabot.yml    # Dependency update config

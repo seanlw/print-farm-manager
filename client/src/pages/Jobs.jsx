@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useConfirm } from '../useConfirm';
+import { useToast } from '../useToast';
 import EmptyState from '../components/EmptyState';
 import { useFormattingLocale } from '../useFormattingLocale';
 import { formatShortDateTime, formatJobDuration } from '../lib/format';
@@ -37,6 +38,7 @@ export default function Jobs() {
   const { t } = useTranslation();
   const formattingLocale = useFormattingLocale();
   const [confirm, confirmModal]   = useConfirm();
+  const [showToast, toastEl]      = useToast();
   const [jobs, setJobs]           = useState([]);
   const [loading, setLoading]     = useState(true);
   const [projects, setProjects]   = useState([]);
@@ -85,21 +87,42 @@ export default function Jobs() {
     return () => clearInterval(interval);
   }, [fetchJobs]);
 
-  async function cancelJob(jobId) {
-    const ok = await confirm({
+  // A stuck uploading/printing job (e.g. the printer silently ignored the
+  // print-start command) can be force-cancelled. This only clears the farm's
+  // job row: it never stops the printer itself, and a printer awaiting
+  // sign-off is resolved from Fleet, not here (the button is hidden for those).
+  function canCancel(job) {
+    if (job.status === 'queued') return true;
+    return (job.status === 'uploading' || job.status === 'printing')
+      && displayJobStatus(job) !== 'awaiting';
+  }
+
+  async function cancelJob(job) {
+    const force = job.status !== 'queued';
+    const ok = await confirm(force ? {
+      title: t('jobs.forceCancelTitle'),
+      message: t('jobs.forceCancelMessage'),
+      confirmLabel: t('jobs.forceCancel'),
+      danger: true,
+    } : {
       title: t('jobs.cancelJobTitle'),
       message: t('jobs.cancelJobMessage'),
       confirmLabel: t('jobs.cancelJobTitle'),
       danger: true,
     });
     if (!ok) return;
-    await fetch(`/api/jobs/${jobId}`, { method: 'DELETE' });
+    const res = await fetch(`/api/jobs/${job.id}${force ? '?force=true' : ''}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      showToast(t('jobs.cancelFailed', { reason: body.error || res.status }), 'error');
+    }
     fetchJobs();
   }
 
   return (
     <div>
       {confirmModal}
+      {toastEl}
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 16 }}>{t('jobs.title')}</h1>
 
       {/* Filters */}
@@ -170,12 +193,12 @@ export default function Jobs() {
                     {formatShortDateTime(job.started_at, formattingLocale)}
                     {job.started_at && <> · {formatJobDuration(job.started_at, job.finished_at || null, t)}</>}
                   </span>
-                  {job.status === 'queued' && (
+                  {canCancel(job) && (
                     <button
-                      onClick={() => cancelJob(job.id)}
+                      onClick={() => cancelJob(job)}
                       style={{ background: '#7f1d1d', color: '#f87171', border: 'none', borderRadius: 4, padding: '5px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
                     >
-                      {t('common.cancel')}
+                      {job.status === 'queued' ? t('common.cancel') : t('jobs.forceCancel')}
                     </button>
                   )}
                 </div>
@@ -239,16 +262,16 @@ export default function Jobs() {
                         : '—'}
                     </td>
                     <td style={{ padding: '8px 10px' }}>
-                      {job.status === 'queued' && (
+                      {canCancel(job) && (
                         <button
-                          onClick={() => cancelJob(job.id)}
+                          onClick={() => cancelJob(job)}
                           style={{
                             background: '#7f1d1d', color: '#f87171', border: 'none',
                             borderRadius: 4, padding: '3px 10px', fontSize: 12,
-                            fontWeight: 600, cursor: 'pointer',
+                            fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
                           }}
                         >
-                          {t('common.cancel')}
+                          {job.status === 'queued' ? t('common.cancel') : t('jobs.forceCancel')}
                         </button>
                       )}
                     </td>

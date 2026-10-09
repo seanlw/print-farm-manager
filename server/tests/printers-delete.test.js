@@ -219,7 +219,7 @@ describe('DELETE /api/printers/:id', () => {
     await request(app).delete(`/api/printers/${printerId}`);
 
     expect(dropConnection).toHaveBeenCalledTimes(1);
-    expect(dropConnection).toHaveBeenCalledWith(expect.objectContaining({ id: printerId, type: 'bambu' }));
+    expect(dropConnection).toHaveBeenCalledWith('bambu', printerId);
   });
 
   test('cascades: finished/failed job history for the printer is deleted with it', async () => {

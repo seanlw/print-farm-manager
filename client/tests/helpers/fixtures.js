@@ -3,10 +3,10 @@
 const NOW = Date.UTC(2026, 8, 19, 12, 0, 0);
 
 export const printers = [
-  { id: 1, name: 'mk4-01', ip: '10.0.0.11', api_key: 'test-key', group_name: null, type: 'prusa', model: 'mk4s', status: 'PRINTING', is_held: 0, is_active: 1, created_at: NOW - 9e8, decommissioned_at: null, decommission_note: null, job_name: 'left_bracket.gcode', job_progress: 42, job_time_remaining: 3600, serial_number: null, loaded_material: 'PLA', loaded_color: 'Black', spoolman_spool_id: null, spoolman_report_usage: 0, last_parts_per_plate: 4, has_active_job: 1, has_uploading_job: 0, uploading_job_name: null, has_printing_job: 1 },
-  { id: 2, name: 'mk4-02', ip: '10.0.0.12', api_key: 'test-key', group_name: 'Rack A', type: 'prusa', model: 'mk4s', status: 'FINISHED', is_held: 1, is_active: 1, created_at: NOW - 9e8, decommissioned_at: null, decommission_note: null, job_name: null, job_progress: null, job_time_remaining: null, serial_number: null, loaded_material: 'PLA', loaded_color: 'Black', spoolman_spool_id: null, spoolman_report_usage: 0, last_parts_per_plate: 4, has_active_job: 0, has_uploading_job: 0, uploading_job_name: null, has_printing_job: 0 },
-  { id: 3, name: 'core-03', ip: '10.0.0.13', api_key: 'test-key', group_name: 'Rack A', type: 'prusa', model: 'mk4s', status: 'STOPPED', is_held: 1, is_active: 1, created_at: NOW - 9e8, decommissioned_at: null, decommission_note: null, job_name: null, job_progress: null, job_time_remaining: null, serial_number: null, loaded_material: 'PLA', loaded_color: 'Black', spoolman_spool_id: null, spoolman_report_usage: 0, last_parts_per_plate: 4, has_active_job: 0, has_uploading_job: 0, uploading_job_name: null, has_printing_job: 0 },
-  { id: 4, name: 'mini-04', ip: '10.0.0.14', api_key: 'test-key', group_name: null, type: 'octoprint', model: 'mk4s', status: 'IDLE', is_held: 0, is_active: 1, created_at: NOW - 9e8, decommissioned_at: null, decommission_note: null, job_name: null, job_progress: null, job_time_remaining: null, serial_number: null, loaded_material: null, loaded_color: null, spoolman_spool_id: null, spoolman_report_usage: 0, last_parts_per_plate: null, has_active_job: 0, has_uploading_job: 0, uploading_job_name: null, has_printing_job: 0 },
+  { id: 1, name: 'mk4-01', ip: '10.0.0.11', api_key: 'test-key', group_name: null, type: 'prusa', model: 'mk4s', status: 'PRINTING', is_held: 0, is_active: 1, created_at: NOW - 9e8, decommissioned_at: null, decommission_note: null, job_name: 'left_bracket.gcode', job_progress: 42, job_time_remaining: 3600, serial_number: null, loaded_material: 'PLA', loaded_color: 'Black', spoolman_spool_id: null, spoolman_report_usage: 0, last_parts_per_plate: 4, confirm_job_id: null, confirm_credited: null, confirm_parts_per_plate: null, has_active_job: 1, has_uploading_job: 0, uploading_job_name: null, has_printing_job: 1 },
+  { id: 2, name: 'mk4-02', ip: '10.0.0.12', api_key: 'test-key', group_name: 'Rack A', type: 'prusa', model: 'mk4s', status: 'FINISHED', is_held: 1, is_active: 1, created_at: NOW - 9e8, decommissioned_at: null, decommission_note: null, job_name: null, job_progress: null, job_time_remaining: null, serial_number: null, loaded_material: 'PLA', loaded_color: 'Black', spoolman_spool_id: null, spoolman_report_usage: 0, last_parts_per_plate: 4, confirm_job_id: 10, confirm_credited: 4, confirm_parts_per_plate: 4, has_active_job: 0, has_uploading_job: 0, uploading_job_name: null, has_printing_job: 0 },
+  { id: 3, name: 'core-03', ip: '10.0.0.13', api_key: 'test-key', group_name: 'Rack A', type: 'prusa', model: 'mk4s', status: 'STOPPED', is_held: 1, is_active: 1, created_at: NOW - 9e8, decommissioned_at: null, decommission_note: null, job_name: null, job_progress: null, job_time_remaining: null, serial_number: null, loaded_material: 'PLA', loaded_color: 'Black', spoolman_spool_id: null, spoolman_report_usage: 0, last_parts_per_plate: 4, confirm_job_id: null, confirm_credited: null, confirm_parts_per_plate: null, has_active_job: 0, has_uploading_job: 0, uploading_job_name: null, has_printing_job: 0 },
+  { id: 4, name: 'mini-04', ip: '10.0.0.14', api_key: 'test-key', group_name: null, type: 'octoprint', model: 'mk4s', status: 'IDLE', is_held: 0, is_active: 1, created_at: NOW - 9e8, decommissioned_at: null, decommission_note: null, job_name: null, job_progress: null, job_time_remaining: null, serial_number: null, loaded_material: null, loaded_color: null, spoolman_spool_id: null, spoolman_report_usage: 0, last_parts_per_plate: null, confirm_job_id: null, confirm_credited: null, confirm_parts_per_plate: null, has_active_job: 0, has_uploading_job: 0, uploading_job_name: null, has_printing_job: 0 },
 ];
 
 export const models = [{ model_id: 'mk4s', label: 'MK4S', connector: 'prusa' }];
@@ -47,6 +47,63 @@ export const jobHistory = {
 
 export const jobStats = { total_jobs: 2, finished_jobs: 1, failed_jobs: 1, total_parts: 4, success_rate: 50, total_print_ms: 7200e3 };
 
+export const SCHEDULE_VERSION = 'abc123def4567890';
+
+export const printQueue = {
+  version: SCHEDULE_VERSION,
+  parts: [
+    {
+      position: 1, part_id: 1, part_name: 'Left bracket', project_id: 1, project_name: 'Bracket run', project_priority: 1,
+      target_qty: 100, completed_qty: 12, active_qty: 4, remaining_qty: 88, dispatchable: true, blockers: [],
+      matches: [
+        { id: 4, name: 'mini-04', model: 'mk4s', status: 'IDLE', is_held: 0, group_name: null, loaded_material: 'PLA', loaded_color: 'Black', state: 'ready',
+          next_up: { part_id: 1, part_name: 'Left bracket', project_name: 'Bracket run', is_this_part: true }, gcode_id: 5, filename: 'left_bracket.gcode' },
+      ],
+      no_match_reasons: [],
+    },
+  ],
+};
+
+export const schedule = {
+  version: SCHEDULE_VERSION, computed_at: NOW, now: NOW, horizon_hours: 24, horizon_end: NOW + 24 * 3600e3, truncated: false,
+  assumptions: { default_print_secs: 7200, changeover_secs: 900, staffed_start_hour: 6, staffed_end_hour: 22, tie_window_secs: 60 },
+  printers: [
+    { id: 1, name: 'mk4-01', model: 'mk4s', group_name: null, status: 'PRINTING', is_held: 0, available_at: NOW + 3600e3, blocked_reason: null },
+    { id: 2, name: 'mk4-02', model: 'mk4s', group_name: 'Rack A', status: 'FINISHED', is_held: 1, available_at: NOW + 900e3, blocked_reason: 'Awaiting operator sign-off' },
+  ],
+  projects: [{ id: 1, name: 'Bracket run', priority: 1, color_index: 0 }],
+  blocks: [
+    { id: 'job-11', kind: 'active', printer_id: 1, job_id: 11, job_status: 'printing', part_id: 1, part_name: 'Left bracket', project_id: 1, project_name: 'Bracket run',
+      gcode_id: 5, filename: 'left_bracket.gcode', parts_per_plate: 4, start: NOW - 3600e3, end: NOW + 3600e3, est_secs: 7200, time_source: 'gcode', time_unknown: false },
+    { id: 'p-1', kind: 'projected', printer_id: 2, job_id: null, job_status: null, part_id: 1, part_name: 'Left bracket', project_id: 1, project_name: 'Bracket run',
+      gcode_id: 5, filename: 'left_bracket.gcode', parts_per_plate: 4, start: NOW + 900e3, end: NOW + 8100e3, est_secs: 7200, time_source: 'default', time_unknown: true },
+  ],
+  unscheduled: [{ part_id: 2, part_name: 'Right bracket', project_name: 'Bracket run', remaining_qty: 40, reason: 'beyond_horizon' }],
+};
+
+export const partAudit = {
+  part: { id: 1, project_id: 1, name: 'Left bracket', target_qty: 100, completed_qty: 12, status: 'open', created_at: NOW - 8e8, updated_at: NOW - 1e8 },
+  project: { id: 1, name: 'Bracket run', status: 'active' },
+  entries: [
+    { id: 1, created_at: NOW - 9000e3, source: 'print_finished', delta: 4, balance_after: 4, note: null, job_id: 8, printer_id: 2, printer_name: 'mk4-02', printer_exists: true,
+      printer_current_name: 'mk4-02', gcode_id: 5, gcode_filename: 'left_bracket.gcode', parts_per_plate: 4, job_status: 'finished', job_started_at: NOW - 12600e3, job_finished_at: NOW - 9000e3 },
+    { id: 2, created_at: NOW - 5400e3, source: 'print_finished', delta: 4, balance_after: 8, note: null, job_id: 10, printer_id: 2, printer_name: 'mk4-02', printer_exists: true,
+      printer_current_name: 'mk4-02', gcode_id: 5, gcode_filename: 'left_bracket.gcode', parts_per_plate: 4, job_status: 'finished', job_started_at: NOW - 9000e3, job_finished_at: NOW - 5400e3 },
+    { id: 3, created_at: NOW - 3600e3, source: 'manual_edit', delta: 4, balance_after: 12, note: 'Counted by hand', job_id: null, printer_id: null, printer_name: null, printer_exists: false,
+      printer_current_name: null, gcode_id: null, gcode_filename: null, parts_per_plate: null, job_status: null, job_started_at: null, job_finished_at: null },
+  ],
+  uncredited_failures: [
+    { job_id: 9, status: 'failed', parts_per_plate: 4, started_at: NOW - 20000e3, finished_at: NOW - 19000e3, created_at: NOW - 20000e3,
+      printer_id: 3, printer_name: 'core-03', printer_exists: true, gcode_id: 5, gcode_filename: 'left_bracket.gcode' },
+  ],
+  printers: [
+    { printer_id: 2, printer_name: 'mk4-02', printer_exists: true, plates: 2, added: 8, removed: 0, net: 8, failed_plates: 0 },
+    { printer_id: 3, printer_name: 'core-03', printer_exists: true, plates: 0, added: 0, removed: 0, net: 0, failed_plates: 1 },
+    { printer_id: null, printer_name: null, printer_exists: false, plates: 0, added: 4, removed: 0, net: 4, failed_plates: 0 },
+  ],
+  reconciliation: { ledger_sum: 12, completed_qty: 12, matches: true },
+};
+
 // Every request the pages make on mount, for the whole app. Individual tests override entries.
 export function baseRoutes(overrides = {}) {
   return {
@@ -61,6 +118,8 @@ export function baseRoutes(overrides = {}) {
     'GET /api/printers/:id/jobs/stats': jobStats,
     'GET /api/printers/:id/jobs': jobHistory,
     'GET /api/projects': projects,
+    'GET /api/parts/queue': printQueue,
+    'GET /api/parts/:id/audit': partAudit,
     'GET /api/parts': parts,
     'GET /api/jobs': jobs,
     'GET /api/notifications': [],
@@ -68,6 +127,8 @@ export function baseRoutes(overrides = {}) {
     'GET /api/filaments/colors': [{ id: 1, type_id: 1, name: 'Black', hex_color: '#111111', type_name: 'PLA' }],
     'GET /api/spoolman/status': { enabled: false, base_url: '', reachable: false, error: '' },
     'GET /api/gcodes': [],
+    'GET /api/schedule/version': { version: SCHEDULE_VERSION },
+    'GET /api/schedule': schedule,
     ...overrides,
   };
 }

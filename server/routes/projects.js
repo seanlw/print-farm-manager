@@ -1,6 +1,7 @@
 const express = require('express');
 const path    = require('path');
 const fs      = require('fs');
+const partLedger = require('../partLedger');
 const router  = express.Router();
 
 const GCODE_DIR = require('../paths').gcodeDir;
@@ -56,6 +57,9 @@ module.exports = (db, scheduler = null) => {
     db.prepare(`
       UPDATE projects SET required_material = ?, required_color = ?, updated_at = ? WHERE id = ?
     `).run(mat, col, Date.now(), project.id);
+    // Changing the project's filament can make an already-idle printer a match; idle
+    // printers never re-ask on their own, so sweep now.
+    if (scheduler) scheduler.sweepIdlePrinters();
     res.json(db.prepare('SELECT * FROM projects WHERE id = ?').get(project.id));
   });
 
@@ -74,6 +78,8 @@ module.exports = (db, scheduler = null) => {
     db.prepare(`
       UPDATE projects SET allowed_groups = ?, updated_at = ? WHERE id = ?
     `).run(value, Date.now(), project.id);
+    // Same reason as the filament route above: a newly allowed group may contain an idle printer.
+    if (scheduler) scheduler.sweepIdlePrinters();
     res.json(db.prepare('SELECT * FROM projects WHERE id = ?').get(project.id));
   });
 
@@ -113,6 +119,7 @@ module.exports = (db, scheduler = null) => {
           db.prepare('DELETE FROM gcodes WHERE id = ?').run(gcode.id);
         }
 
+        partLedger.deleteForPart(db, part.id);
         db.prepare('DELETE FROM parts WHERE id = ?').run(part.id);
       }
       db.prepare('DELETE FROM projects WHERE id = ?').run(project.id);

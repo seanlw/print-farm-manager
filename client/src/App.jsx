@@ -6,16 +6,22 @@ import Fleet from './pages/Fleet';
 import Printers from './pages/Printers';
 import PrinterDetail from './pages/PrinterDetail';
 import Projects from './pages/Projects';
+import PartAudit from './pages/PartAudit';
 import Jobs from './pages/Jobs';
+import Schedule from './pages/Schedule';
+import PrintQueue from './pages/PrintQueue';
 import Settings from './pages/Settings';
 import Decommissioned from './pages/Decommissioned';
 
 const NAV_ITEMS = [
   { to: '/',               key: 'nav.dashboard' },
-  { to: '/fleet',          key: 'nav.fleet' },
-  { to: '/printers',       key: 'nav.printers', end: true },
+  { to: '/fleet',          key: 'nav.fleet',         end: true },
+  // Sub-page of Fleet: indented under it in the sidebar.
+  { to: '/fleet/queue',    key: 'nav.printQueue',    child: true },
+  { to: '/printers',       key: 'nav.printers',      end: true },
   { to: '/projects',       key: 'nav.projects' },
   { to: '/jobs',           key: 'nav.jobs' },
+  { to: '/schedule',       key: 'nav.schedule' },
   { to: '/decommissioned', key: 'nav.decommissioned' },
   { to: '/settings',       key: 'nav.settings' },
 ];
@@ -77,7 +83,15 @@ export default function App() {
             <div style={{ fontWeight: 400, fontSize: 11, color: '#475569' }}>{t('app.subtitle')}</div>
           </div>
           {NAV_ITEMS.map((item) => (
-            <NavLink key={item.to} to={item.to} end={item.to === '/' || !!item.end} style={navLinkStyle}>
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.to === '/' || !!item.end}
+              style={(state) => ({
+                ...navLinkStyle(state),
+                ...(item.child && { marginLeft: 12, padding: '6px 12px', fontSize: 13 }),
+              })}
+            >
               {t(item.key)}
             </NavLink>
           ))}
@@ -111,10 +125,13 @@ export default function App() {
           <Routes>
             <Route path="/"                element={<Dashboard />} />
             <Route path="/fleet"           element={<Fleet />} />
+            <Route path="/fleet/queue"     element={<PrintQueue />} />
             <Route path="/printers"        element={<Printers />} />
             <Route path="/printers/:id"    element={<PrinterDetail />} />
             <Route path="/projects"        element={<Projects />} />
+            <Route path="/parts/:id/audit" element={<PartAudit />} />
             <Route path="/jobs"            element={<Jobs />} />
+            <Route path="/schedule"        element={<Schedule />} />
             <Route path="/decommissioned"  element={<Decommissioned />} />
             <Route path="/settings"        element={<Settings />} />
           </Routes>

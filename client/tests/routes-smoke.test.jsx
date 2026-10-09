@@ -17,10 +17,13 @@ const heading = (key) => () => screen.findByRole('heading', { name: t(key) });
 const PAGES = [
   { name: 'Dashboard', path: '/', ready: () => screen.findByText(t('dashboard.commandCenter')), data: 'mk4-01' },
   { name: 'Fleet', path: '/fleet', ready: heading('fleet.title'), data: 'mk4-02' },
+  { name: 'Print Queue', path: '/fleet/queue', ready: heading('printQueue.title'), data: 'mini-04' },
   { name: 'Printers', path: '/printers', ready: heading('printers.title'), data: 'MK4S' },
   { name: 'Printer detail', path: '/printers/1', ready: () => screen.findByText(new RegExp(t('printerDetail.backToAllPrinters'))), data: 'Cleaned the bed' },
   { name: 'Projects', path: '/projects', ready: heading('projects.title'), data: 'Bracket run' },
+  { name: 'Part audit', path: '/parts/1/audit', ready: () => screen.findByText(t('partAudit.subtitle'), { exact: false }), data: 'core-03' },
   { name: 'Jobs', path: '/jobs', ready: heading('jobs.title'), data: 'Left bracket' },
+  { name: 'Schedule', path: '/schedule', ready: heading('schedule.title'), data: 'Right bracket' },
   { name: 'Decommissioned', path: '/decommissioned', ready: heading('decommissioned.title'), data: null },
   { name: 'Settings', path: '/settings', ready: heading('settings.title'), data: 'MK4S' },
 ];

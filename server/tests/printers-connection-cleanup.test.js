@@ -155,7 +155,7 @@ test('POST /:id/decommission drops the driver connection cache', async () => {
 
   const res = await request(app).post(`/api/printers/${printerId}/decommission`);
   expect(res.status).toBe(200);
-  expect(dropConnection).toHaveBeenCalledWith(expect.objectContaining({ id: printerId }));
+  expect(dropConnection).toHaveBeenCalledWith('bambu', printerId);
 });
 
 test('POST /:id/complete-and-decommission drops the driver connection cache', async () => {
@@ -167,7 +167,7 @@ test('POST /:id/complete-and-decommission drops the driver connection cache', as
 
   const res = await request(app).post(`/api/printers/${printerId}/complete-and-decommission`);
   expect(res.status).toBe(200);
-  expect(dropConnection).toHaveBeenCalledWith(expect.objectContaining({ id: printerId }));
+  expect(dropConnection).toHaveBeenCalledWith('bambu', printerId);
 });
 
 test('POST /:id/mark-job-failure drops the driver connection cache (no tracked job)', async () => {
@@ -175,7 +175,7 @@ test('POST /:id/mark-job-failure drops the driver connection cache (no tracked j
 
   const res = await request(app).post(`/api/printers/${printerId}/mark-job-failure`);
   expect(res.status).toBe(200);
-  expect(dropConnection).toHaveBeenCalledWith(expect.objectContaining({ id: printerId }));
+  expect(dropConnection).toHaveBeenCalledWith('bambu', printerId);
 });
 
 test('POST /:id/mark-job-failure drops the driver connection cache (tracked job failed)', async () => {
@@ -187,5 +187,5 @@ test('POST /:id/mark-job-failure drops the driver connection cache (tracked job 
 
   const res = await request(app).post(`/api/printers/${printerId}/mark-job-failure`);
   expect(res.status).toBe(200);
-  expect(dropConnection).toHaveBeenCalledWith(expect.objectContaining({ id: printerId }));
+  expect(dropConnection).toHaveBeenCalledWith('bambu', printerId);
 });

@@ -2,9 +2,11 @@ const EventEmitter = require('events');
 const fs = require('fs');
 const path = require('path');
 const { getDriver } = require('./drivers');
+const { candidateSql, SCHEDULER_COLUMNS } = require('./candidate-query');
 const notifications = require('./notifications');
 const events = require('./events');
 const spoolman = require('./integrations/spoolman');
+const partLedger = require('./partLedger');
 
 const GCODE_DIR = require('./paths').gcodeDir;
 
@@ -313,36 +315,10 @@ class JobScheduler extends EventEmitter {
     let gcodeFullPath = null;
 
     while (true) {
-      const excludeClause = skippedPartIds.length > 0
-        ? `AND parts.id NOT IN (${skippedPartIds.map(() => '?').join(',')})`
-        : '';
-
-      candidate = this.db.prepare(`
-        SELECT
-          parts.id          AS part_id,
-          parts.target_qty,
-          parts.completed_qty,
-          parts.project_id,
-          gcodes.id         AS gcode_id,
-          gcodes.filename,
-          gcodes.filepath,
-          gcodes.parts_per_plate,
-          gcodes.ams_slot
-        FROM parts
-        JOIN gcodes   ON gcodes.part_id    = parts.id
-        JOIN projects ON projects.id       = parts.project_id
-        WHERE parts.status    = 'open'
-          AND projects.status = 'active'
-          AND gcodes.printer_model = ?
-          AND (COALESCE(gcodes.allowed_groups, projects.allowed_groups) IS NULL OR EXISTS (
-            SELECT 1 FROM json_each(COALESCE(gcodes.allowed_groups, projects.allowed_groups)) WHERE value = ?
-          ))
-          AND (COALESCE(gcodes.required_material, projects.required_material) IS NULL OR COALESCE(gcodes.required_material, projects.required_material) = ?)
-          AND (COALESCE(gcodes.required_color, projects.required_color) IS NULL OR COALESCE(gcodes.required_color, projects.required_color) = ?)
-          ${excludeClause}
-        ORDER BY projects.priority ASC, projects.created_at ASC, parts.sort_order ASC, parts.created_at ASC
-        LIMIT 1
-      `).get(printer.model, printer.group_name, printer.loaded_material, printer.loaded_color, ...skippedPartIds);
+      // Eligibility rules and priority ordering live in server/candidate-query.js so the
+      // schedule projection asks the identical question without a second copy to drift.
+      candidate = this.db.prepare(candidateSql(SCHEDULER_COLUMNS, skippedPartIds.length))
+        .get(printer.model, printer.group_name, printer.loaded_material, printer.loaded_color, ...skippedPartIds);
 
       if (!candidate) {
         console.log(`[scheduler] No candidate found for ${printer.name} (model: ${printer.model}) — no open parts with matching G-code in an active project`);
@@ -457,7 +433,16 @@ class JobScheduler extends EventEmitter {
       // the upload as a success so the job is tracked correctly.
       const isActuallyPrinting = await driver.checkIfPrinting(printer);
       if (isActuallyPrinting) {
-        this.db.prepare(`UPDATE jobs SET status = 'printing', started_at = ? WHERE id = ?`).run(Date.now(), jobId);
+        // Guard on 'uploading': the operator may have force-cancelled this job while
+        // the upload retried. A cancelled job must stay cancelled, not come back as
+        // 'printing' from a stale in-flight dispatch.
+        const recovered = this.db.prepare(
+          `UPDATE jobs SET status = 'printing', started_at = ? WHERE id = ? AND status = 'uploading'`
+        ).run(Date.now(), jobId);
+        if (recovered.changes === 0) {
+          console.log(`[scheduler] ${printer.name} job ${jobId} was cancelled during upload, leaving it cancelled`);
+          return null;
+        }
         console.log(`[scheduler] ${printer.name} upload appeared to fail but printer is printing — job ${jobId} recovered`);
         return jobId;
       }
@@ -475,9 +460,15 @@ class JobScheduler extends EventEmitter {
       return null;
     }
 
-    this.db.prepare(`
-      UPDATE jobs SET status = 'printing', started_at = ? WHERE id = ?
+    // Same guard as the recovery path above: if the operator force-cancelled the
+    // job while the file was transferring, do not resurrect it to 'printing'.
+    const started = this.db.prepare(`
+      UPDATE jobs SET status = 'printing', started_at = ? WHERE id = ? AND status = 'uploading'
     `).run(Date.now(), jobId);
+    if (started.changes === 0) {
+      console.log(`[scheduler] ${printer.name} job ${jobId} was cancelled during upload, leaving it cancelled`);
+      return null;
+    }
 
     console.log(`[scheduler] ${printer.name} ← ${candidate.filename}`);
     return jobId;
@@ -546,10 +537,18 @@ class JobScheduler extends EventEmitter {
     this.db.prepare(`UPDATE jobs SET status = 'finished', finished_at = ? WHERE id = ?`)
       .run(now, job.id);
 
-    // Increment completed_qty
-    this.db.prepare(`
-      UPDATE parts SET completed_qty = completed_qty + ?, updated_at = ? WHERE id = ?
-    `).run(job.parts_per_plate, now, job.part_id);
+    // Increment completed_qty (and record it in the part ledger)
+    const part = partLedger.adjustPartQty(this.db, {
+      partId: job.part_id,
+      delta: job.parts_per_plate,
+      source: partLedger.SOURCES.PRINT_FINISHED,
+      job,
+      printer,
+      note: job.status === 'failed'
+        ? 'Printer reported FINISHED after a connection drop this session'
+        : null,
+      now,
+    });
 
     // Best-effort side effect, strictly after the credit above and never affecting it.
     // reportJobUsage never throws, but this is a background (non-request) code path, so
@@ -557,8 +556,6 @@ class JobScheduler extends EventEmitter {
     spoolman.reportJobUsage(this.db, job.id).catch((err) =>
       console.warn(`[scheduler] Spoolman usage report failed for job ${job.id}:`, err)
     );
-
-    const part = this.db.prepare('SELECT * FROM parts WHERE id = ?').get(job.part_id);
 
     console.log(`[scheduler] ${printer.name} finished — Part "${part.name}" ${part.completed_qty}/${part.target_qty}`);
 

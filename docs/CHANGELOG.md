@@ -2,6 +2,217 @@
 
 ---
 
+## 2026-10-09: merge upstream (part audit ledger, confirmed-count fix, Print Queue, Schedule, driver connection drops)
+
+Merged the five upstream commits since the last sync (upstream #79, #80, #81, #83, #84). Their own entries follow below, dated as upstream dated them. What upstream brings: every `completed_qty` change now goes through `server/partLedger.js` and is recorded in a new `part_qty_ledger` table, with a part audit page behind it; repeating a confirmed good count no longer applies it twice; a read-only Schedule page and a Print Queue page under Fleet; persistent driver connections dropped on printer edits as well as deletes and decommissions; force-cancel for stuck jobs; unsliced `.3mf` uploads rejected; print time and weight read from the uploaded file. The axios bump (#84) was already on the fork.
+
+Part-count paths: the merge keeps upstream's ledger calls on every crediting path and keeps the fork's Spoolman usage report after each credit, in the scheduler's finish handler, all three Set Ready credit branches, and Complete and Decommission. Credit amounts and conditions are upstream's, unchanged. `server/tests/part-ledger-guard.test.js` passes, so no fork-only code writes `completed_qty` outside the ledger.
+
+Where the two sides disagreed, and what the merge chose:
+
+- `dropConnection`: both sides had added one independently. The fork's took a printer row and loaded the driver to call it; upstream's takes `(type, printerId)` and never force-loads a lazy driver. The merge keeps upstream's, and the fork's call sites and tests now use it.
+- `DELETE /api/printers/:id` keeps the fork's rules: the printer must be decommissioned and have no unresolved job, and its jobs are deleted with it. Ledger rows have no foreign keys and keep a `printer_name` snapshot, so a part's audit trail still names a deleted printer.
+- `server/routes/gcodes.js` keeps the fork's `POST /api/gcodes/:id/parse-gcode` and lazy filament-usage backfill next to upstream's upload-time reading of print time and weight (`server/slicer-metadata.js`). Both read the file's own slicer metadata, through different parsers.
+
+Fork conventions applied to the upstream code: all UI text on the three new pages (Part Audit, Print Queue, Schedule) and in upstream's changes to Fleet, Jobs, Projects and the sidebar goes through `en.json` (new `printQueue`, `schedule` and `partAudit` namespaces, plus keys in `nav`, `jobs` and `projects`). The Schedule and Part Audit pages' local date and duration formatters moved to `client/src/lib/format.js` and use the formatting locale. Upstream's new code and tests use `server/paths.js` instead of `__dirname` paths. Upstream's new test files gained the fork-only columns their inline schemas were missing.
+
+One upstream bug fixed during the browser check: the Schedule page drew every printer lane below the whole time axis, so the visible grid was empty while the page reported projected plates. The "now" line is pinned to grid row 2 across the lane columns, so CSS grid auto-placement pushed the lanes into a third row. The gutter and lanes now sit in explicit grid cells. It only shows in a real browser (happy-dom does no layout), so there is no automated regression test; it was checked at desktop width and at 480 px.
+
+Browser-checked against the dev container with `DEMO_MODE=true` on a scratch data directory: Schedule (blocks, legend, horizon and zoom controls), Print Queue, Part audit (chart, by-printer table, timeline), Projects (Audit link, Est. print time field, "Why isn't this printing?" printer list), Jobs (Force Cancel confirm dialog, dismissed without cancelling), Fleet (pre-filled good count, Print Queue sidebar entry), and Schedule at phone width.
+
+Full suite passes in the Docker dev container, and the client production build succeeds. Hardware validation is not applicable to the merge itself: upstream's own entries below state what was validated on its farm.
+
+### Changes
+- Merge of `upstream/main` at b5bb0a2.
+- `server/drivers/index.js`: upstream's `dropConnection(type, printerId)`; `server/routes/printers.js` calls it everywhere; `server/tests/printers-connection-cleanup.test.js` and `printers-delete.test.js` assert the new signature.
+- `server/index.js`, `server/scheduler.js`, `server/routes/printers.js`: ledger credit plus Spoolman usage report on each credit path.
+- `server/routes/gcodes.js`, `server/routes/parts.js`, `server/scripts/audit-dry-run.js`, `server/tests/gcodes-3mf-validation.test.js`, `server/tests/gcodes-slicer-estimates.test.js`: paths from `server/paths.js`.
+- `server/tests/targeting-sweep.test.js`, `printers-connection-drop.test.js`, `gcodes-3mf-validation.test.js`, `gcodes-slicer-estimates.test.js`: fork-only columns in the inline schemas; `printers-connection-drop.test.js` decommissions before deleting; `backup-restore.test.js` ledger tests reuse the seeded finished job; `scheduler-finished.test.js` keeps both the Spoolman and the ledger cases.
+- `client/src/App.jsx`, `client/src/pages/{Fleet,Jobs,Projects,PrintQueue,Schedule,PartAudit}.jsx`, `client/src/locales/en.json`: translated UI text; unused `projects.readyToDispatch` and `projects.quantitiesLabel` keys removed.
+- `client/src/pages/Schedule.jsx`: gutter and printer lanes placed in explicit grid cells so they are not pushed below the time axis.
+- `client/src/lib/format.js`: `formatHourMinute`, `formatScheduleHourLabel`, `formatBlockDuration`, `formatAuditTimestamp`, tested in `client/tests/format.test.js`.
+- `client/tests/routes-smoke.test.jsx`, `client/tests/helpers/fixtures.js`: Print Queue, Schedule and Part audit routes, their fixtures, and the `confirm_*` fields on printers.
+- `docs/README.md`, `docs/api.md`, `docs/web-app.md`, `docs/driver-authoring.md`: conflicts resolved to describe the merged behavior. `docs/database.md`: the dry-run script honors `PFM_DATA_DIR`.
+- `docs/CHANGELOG.md`: upstream entries moved to the top, a stray duplicated heading from the union merge removed.
+- `CLAUDE.md`: the fork description no longer says upstream is inactive; new "Merging upstream" section.
+
+## 2026-09-30: Print Queue page under Fleet
+
+The dispatch check on the Projects page explains one part at a time, and the Schedule page shows time rather than eligibility. Neither answers the question an operator asks walking the floor: "what is waiting, in what order, and which printers can take it?" The new Print Queue page (sidebar, indented under Fleet, at `/fleet/queue`) lists every open part of every active project in the scheduler's own order, with a tag for each printer that matches the part (model, group, loaded filament) coloured by whether it is ready, busy, or awaiting sign-off. `NEXT` marks a ready printer that would print this part on its next dispatch. A part with no matching printer shows why instead: no G-code, no active printer of that model, none in the allowed groups, or none with the required filament loaded.
+
+**One set of rules.** The per-part logic behind `GET /api/parts/:id/dispatch-status` moved into a shared `diagnosePart` in `server/routes/parts.js`, and the new `GET /api/parts/queue` calls it for every queued part, so the queue and the dispatch check cannot disagree. Each request computes "what would this printer print next" once per printer rather than once per part.
+
+**One behaviour change to the dispatch check.** A printer holding an `uploading` or `printing` job row now counts as busy even while its last polled status still says IDLE or FINISHED. The scheduler already refuses to dispatch to such a printer (it checks the job row before reserving), so the check was briefly calling a just-dispatched printer ready when it was not. Matching printers still come from the same model, group, and filament rules.
+
+**Freshness.** The queue is built from the same inputs as the forward schedule, so it reuses the schedule fingerprint: the response carries `version`, and the page polls `GET /api/schedule/version` every 5 s and shows "Recalculating queue" when it moves, rather than waiting on a 15 s timer.
+
+Read-only: nothing here writes to the database, dispatches, touches holds, or changes any path that credits `completed_qty`. Verified by the test suite and against a client build; not yet exercised on the production farm.
+
+### Changes
+- `server/routes/parts.js`: `diagnosePart` and a per-request context (active-job printer set, cached next-up per printer) shared by `dispatch-status` and the new `GET /queue`, declared above `/:id`; printer objects gain `model`, G-code entries gain `mismatch`; blocker strings reworded without dashes.
+- `client/src/pages/PrintQueue.jsx` (new): the Print Queue page.
+- `client/src/App.jsx`: `/fleet/queue` route; sidebar sub-item support (`child: true`), with Fleet set to `end` so only the open page highlights.
+- `server/tests/print-queue.test.js` (new, 9 tests): route not shadowed by `/:id`, selection and ordering, match states, job-row busy, each no-match reason, blocker, version change.
+- `server/tests/dispatch-status.test.js`: inline `jobs` schema gained `printer_id`, which the busy check reads.
+- `docs/api.md`, `docs/web-app.md`, `docs/README.md`: documented the endpoint, the response additions, the page, and the nav sub-item.
+
+## 2026-09-30: confirming the same good-part count twice applied it twice
+
+Set Ready and Complete and Decommission treated the operator's "N good" as "N fewer than a full plate": the server compared it to `parts_per_plate`, and the Fleet page always pre-filled the full plate. If a printer was held again for the same finished print after a correction (for example 3 of 4 good), retyping 3 subtracted another part. The 2026-09-25 mark-failed fix deliberately left this alone, because switching the server to the ledger net while the page still pre-filled the full plate would have turned a routine confirm into a phantom +1.
+
+Now the count is the plate's **total** good parts, and the page and server agree on which job it is for:
+
+- `GET /api/printers` reports, for held printers, the finished job a confirmation would correct (`confirm_job_id`), its plate size, and what it currently counts for (`confirm_credited`, its ledger net). The job comes from `finishedConfirmTarget()` in the new `server/confirmCount.js`, which is now also the rule Set Ready itself uses, so there is one copy.
+- The Fleet page pre-fills the count with `confirm_credited` and sends `confirm_job_id` back as `job_id`.
+- With a `job_id`, the server applies the confirmed count minus what the job currently counts for. 24 of 25 still subtracts 1; confirming the pre-filled value, or the same correction again, changes nothing; raising a correction back up credits only the difference. If the `job_id` no longer names the job being corrected (a newer finish, a print started, or a stop on the printer since the page loaded), the request is refused with 409 before anything changes, and the page asks the operator to refresh.
+- Requests without a `job_id` (an old browser tab left open, or a script) keep the previous behavior exactly.
+
+Each correction is still backed by one operator confirmation of one specific finished job, and because the count is now a total it is idempotent: repeating it, or a printer being held again, cannot move the count. Missed-finish, connection-drop, stopped-on-printer, and stalled-upload credits are unchanged. Against Joel's 2026-09-29 20:00 farm backup, every printer with a confirm target pre-fills the full plate, so day-to-day confirms look and behave as before.
+
+Checked end to end in the running app on demo data, through the real Set Ready endpoint: a 4-part plate confirmed as 3 took the part from 51 to 50; held again, the card pre-filled 3 and confirming left it at 50 with a single "Count corrected" ledger row; a page made stale by a newer finish got the 409 toast and the count stayed at 50. Not yet run on the farm.
+
+### Changes
+- `server/confirmCount.js` (new): `finishedConfirmTarget()`, `applyConfirmedCount()`, and the `job_id` check.
+- `server/index.js`: set-ready uses the shared target rule, refuses a stale `job_id` with 409, and applies the count through `applyConfirmedCount()`.
+- `server/routes/printers.js`: complete-and-decommission does the same; `GET /api/printers` adds `confirm_job_id`, `confirm_parts_per_plate`, `confirm_credited` for held printers.
+- `client/src/pages/Fleet.jsx`: pre-fills the count from `confirm_credited`, sends `job_id` with Set Ready and Complete and Decommission, and refetches after a 409.
+- `server/tests/confirm-count.test.js` (new): target rule, total vs legacy counts, the new printer fields, and complete-and-decommission with a current, repeated, stale, and absent `job_id` (the repeat and stale cases fail against the old route).
+- `docs/api.md`, `docs/web-app.md`, `docs/database.md`: documented the total count, `job_id`, the 409, and the new printer fields.
+
+---
+
+## 2026-09-30: ledger repair for credits made while untracked code ran
+
+The audit page on the farm showed its reconciliation banner for part 166 ("SKU2 - Main", AgXRP 200 SKU1 SKU2): completed 93, ledger 89. Cause, confirmed from the 2026-09-29 20:00 hourly backup: while switching the farm back to `main`, `update.bat` ran once before the audit trail PR was merged, restarting the pre-ledger code for about a minute. Four finished jobs (MK4S_01, 02, 04, 05, finished 5:37:13 to 5:37:43 PM local) were credited to `completed_qty` by that code with no ledger rows. The next `update.bat` brought the ledger back, but the startup rebuild skips parts that already have rows. Counts were right throughout; only the history was missing those four rows. No other part was affected.
+
+New `repairMismatchedLedgers()`, run through `audit-dry-run.js --repair` (preview) and `--repair --apply`. For each part whose ledger does not add up, each finished job with no ledger rows gets a `recovered_job` row at its finish time, with its running total continuing from the row before it. Rows written after the gap already carry the true total, so none are changed. Anything still unexplained gets one labelled `baseline` row. It never changes `completed_qty`. Checked against a copy of that backup: the four jobs recovered as 86 to 89, the 5:38 PM row continues at 90, the part reconciles, and a second run is a no-op.
+
+Deliberately manual rather than run at startup: an automatic heal would also hide a future bug that changes a count without recording it, which is what the reconciliation check is for.
+
+### Changes
+- `server/partLedger.js`: `repairMismatchedLedgers()` and the `recovered_job` source (counted as a credited plate in the audit summary).
+- `server/scripts/audit-dry-run.js`: `--repair` (preview) and `--repair --apply`.
+- `client/src/pages/PartAudit.jsx`: "Finished (recovered)" badge.
+- `server/tests/part-ledger.test.js`: repair preview, apply with continuous running totals and untouched existing rows, idempotence, the unexplained-change baseline, consistent parts left alone, and the audit summary.
+- `docs/database.md`, `docs/api.md`, `docs/web-app.md`: documented the repair and the new source.
+
+---
+## 2026-09-29: Filament and targeting edits dispatch immediately; the dispatch check shows which printer matches
+
+Reported on the farm: a project and a printer were both set to PETG, the part's "Why isn't this printing?" check said it was ready and that a matching printer would pick it up, and nothing printed. There was also no way to tell from the check which printer it meant.
+
+**Root cause.** An idle printer only asks the scheduler for work when the poller sees it transition into IDLE (the `printerIdle` event). Loading PETG on a printer that is already idle, or setting a project's filament or groups, changed eligibility without any transition, and none of those routes swept. The printer sat idle next to a matching part until some unrelated event (an upload, a project activation, a restart) ran a sweep. The check's promise of "the next sweep" was therefore misleading: there is no periodic sweep.
+
+**Fix.** `PUT /api/printers/:id` now sweeps when loaded material, loaded color, group, or model changes; `PUT /api/projects/:id/filament` and `/groups` always sweep; `PUT /api/gcodes/:id` sweeps when its targeting changes. The sweep already filters to idle, unheld, active printers, so this only ever dispatches where an IDLE transition would have. Printer material and color are also trimmed on the way in, since matching is exact string equality and `"PETG "` would silently never match `"PETG"`.
+
+**Printer match list.** `GET /api/parts/:id/dispatch-status` now also returns, per G-code, every active printer of that model with its match state (ready, busy, held, wrong filament, wrong group), what it has loaded, and for ready printers what the scheduler would actually hand it next. That next-up answer comes from the shared candidate query in `server/candidate-query.js` plus the same ceiling skip as `_reserveJob`, so it cannot disagree with dispatch. It exposes a second way "ready" could be misleading: a matching printer that will print a higher-priority part first. The check now says so instead of promising this part. On the Projects page each printer name links to its detail page, and a Dispatch now button appears when a ready printer has this part next.
+
+No change to hold semantics or any path that credits `completed_qty`. Verified by the test suite and against seeded demo data; not yet exercised on the production farm.
+
+### Changes
+- `server/routes/printers.js`: factory takes an optional scheduler; sweep after a targeting-relevant edit; `cleanFilament` trims material and color on create and update.
+- `server/routes/projects.js`: sweep after `PUT /:id/filament` and `PUT /:id/groups`.
+- `server/routes/gcodes.js`: sweep after `PUT /:id` when group, material, or color targeting changes.
+- `server/index.js`: printers router mounted with the scheduler, alongside projects, parts, and gcodes.
+- `server/routes/parts.js`: dispatch-status returns `gcodes[].printers[]` with `state` and `next_up`, and a note when higher-priority work is ahead on every ready printer.
+- `client/src/pages/Projects.jsx`: `PrinterMatchList` under the dispatch check, linked printer names, honest ready message, Dispatch now button.
+- `server/tests/targeting-sweep.test.js` (new, 11 tests): sweep and no-sweep cases for all four routes, trimming, 404 without a sweep.
+- `server/tests/dispatch-status.test.js`: 4 new tests for match states, next-up, higher-priority note, and the ceiling skip; schema gained the columns the shared candidate query reads.
+- `docs/api.md`, `docs/web-app.md`: documented the sweeps, trimming, the new response fields, and the printer list.
+
+## 2026-09-25: mark-job-failure deducted the full plate after a count correction
+
+Found while building the part audit trail and reproduced in a test: on a part at 10 whose last plate held 4, Complete and Decommission with 3 of 4 good correctly took the count to 9, but marking that same job failed then deducted the full plate (to 5) instead of the 3 it actually contributed (to 6), leaving the part one short. mark-job-failure assumed a finished job always contributes exactly `parts_per_plate`.
+
+Fixed with the new `partLedger.jobNetCredit()`, which sums a job's `part_qty_ledger` rows: exactly what it contributes to the count right now. mark-job-failure deducts that, and nothing when it is 0. For an uncorrected job the net is the full plate, so normal behavior is unchanged: against Joel's 2026-09-24 farm backup, all 9,203 finished jobs have a net credit equal to their `parts_per_plate` after the rebuild. A job with no ledger rows falls back to `parts_per_plate`. The deduction is still backed by one operator action on one job, and the endpoint only matches `finished` jobs and flips them to `failed`, so it cannot fire twice for the same job. It can only ever deduct less than before, never credit.
+
+Deliberately not changed: Set Ready and Complete and Decommission still apply `confirmed_qty` against `parts_per_plate`. Switching them to the net credit was tried and backed out. The Fleet page pre-fills `confirmed_qty` with the full plate, so on a printer re-held against the same finished job, a net-based difference would turn a routine confirm into a phantom +1 re-credit of the earlier correction. The remaining, pre-existing edge (typing the same correction twice on a re-held printer applies it twice) needs the Fleet pre-fill to show the job's current net credit first, and is left for Joel to decide on. A new test pins the safe behavior: confirming the pre-filled full plate after a correction adds nothing.
+
+### Changes
+- `server/partLedger.js`: `jobNetCredit()`.
+- `server/routes/printers.js`: mark-job-failure deducts the job's net credit; comment on complete-and-decommission explaining why it stays against `parts_per_plate`.
+- `server/tests/printers-decommission.test.js`: regression test for mark-failed after a correction (fails before the fix: 5 instead of 6), a plate confirmed as 0, the no-ledger fallback, and the pre-fill safety pin.
+- `server/tests/part-ledger.test.js`: `jobNetCredit` unit tests.
+- `docs/api.md`: mark-job-failure deducts the net credit; complete-and-decommission's normal case now documents its existing `confirmed_qty` correction. `docs/database.md`: job net credit.
+
+---
+
+## 2026-09-25: audit trail fixes from the first real-data run
+
+First real run of `server/scripts/audit-dry-run.js`, against Joel's 2026-09-24 23:00 hourly farm backup (158 parts, 9,203 finished jobs): zero mismatches, no completed counts changed, 9,203 rebuilt job rows and 35 baseline rows. With `--db <file>`, the script rebuilds that file in place, but its closing line still said the snapshot "can be deleted" and implied nothing had been written. It now says the file passed was modified and the live DB was not.
+
+Previewing the audit page on that backup also surfaced two things the demo data hid, both fixed before the ledger reaches the farm:
+
+- Baseline rows were dated at the moment of the rebuild, which pinned months-old corrections to upgrade day. Part 94 ("v2.3 Battery Clip", July 300 Polymaker) has 20 finished 25-part plates (500) against a count of 300, last touched on 2026-06-29; its -200 baseline showed as a drop on 2026-09-25. Baseline rows are now dated at the part's `updated_at`, clamped to no earlier than its last rebuilt job and no later than the rebuild.
+- For a closed part, the chart's time axis still ran to today, squeezing a May to June print run into the left sixth of the chart. Closed parts now end the axis at their last event; open parts still run to now.
+
+### Changes
+- `server/scripts/audit-dry-run.js`: closing message distinguishes `--db` (file modified in place) from the default snapshot mode.
+- `server/partLedger.js`: `rebuildMissingLedgers()` dates baseline rows at the part's `updated_at`, clamped between its last rebuilt job and `now`.
+- `server/tests/part-ledger.test.js`: covers both clamps.
+- `client/src/pages/PartAudit.jsx`: chart time axis ends at the last event for closed parts.
+- `docs/database.md`, `docs/web-app.md`: documented both.
+
+---
+
+## 2026-09-24: part audit page
+
+Phase 3 of 3 of the part audit trail. Clicking a part's progress bar (or the new "Audit ›" label beside its percentage) on the Projects page opens `/parts/:id/audit`. The page shows how the part's printed total was built up: a step chart of the running total against the target, a per-printer breakdown of what each machine contributed and lost, and a filterable timeline of every credit, correction, deduction, and failure with its printer, job number, and G-code file. Failures that never credited (a plate that failed or was stopped before any count was added) are included as dimmed zero-change rows and gray chart markers, so the page shows every failure and not only the ones that took parts away. The Back link returns to the Projects page with the part's project already open.
+
+Read-only, no new dependencies: the chart is hand-drawn SVG, and the layout switches to stacked cards below 600 px. Checked with `npm run build` and screenshots against the demo seed at 1280 px and 390 px (no horizontal page scroll on the phone width), including the hover tooltip and the Back link round trip.
+
+### Changes
+- `client/src/pages/PartAudit.jsx` (new): the audit page.
+- `client/src/App.jsx`: `/parts/:id/audit` route.
+- `client/src/pages/Projects.jsx`: each part's count label and progress bar link to its audit page, with an "Audit ›" affordance; the page opens the project passed as `openProjectId` in router state, so the audit page's Back link returns to it.
+- `docs/web-app.md`: Part Audit Page section, the Projects audit link, key-files table.
+
+---
+
+## 2026-09-24: part audit API
+
+Phase 2 of 3 of the part audit trail: `GET /api/parts/:id/audit` returns everything the audit page needs in one read. That covers the part and project, every ledger entry joined to its job, printer, and G-code, and a per-printer summary (plates credited, parts added and removed, net contribution, failed plates). It also returns a reconciliation flag that turns false if the ledger ever stops adding up to `completed_qty`. It also lists uncredited failures: jobs that started printing and ended failed or cancelled without changing the count, so the page can show the full failure picture and not only the deductions. Read-only; no part-count path touched.
+
+Checked against the demo seed through a running server in `DEMO_MODE`: the Standard Benchy part returned 6 entries, 1 uncredited failure, and a matching reconciliation (47 of 47).
+
+### Changes
+- `server/partLedger.js`: `getPartAudit()` builds the response.
+- `server/routes/parts.js`: `GET /:id/audit`, declared before the other `/:id` routes.
+- `server/tests/part-audit.test.js` (new): 404, entry joins and ordering, uncredited-failure inclusion and exclusion rules, per-printer summary, deleted and renamed printers, deleted G-code, reconciliation.
+- `docs/api.md`: `GET /api/parts/:id/audit` entry; `PUT /api/parts/:id` notes the `manual_edit` ledger row.
+
+---
+
+## 2026-09-24: part quantity ledger (audit trail foundation)
+
+Joel asked for a per-part audit page showing how a part's printed total was built up: which printers and which print jobs added to it, and which failures took away from it. Until now `parts.completed_qty` was a single running number with no record of why it changed, spread across eight separate code paths (the scheduler's automatic FINISHED credit, four set-ready branches, two complete-and-decommission branches, mark-job-failure, and manual edits on the Projects page).
+
+This is phase 1 of 3: the data layer only. Nothing changes for operators yet. Every change to `completed_qty` now goes through one helper, `adjustPartQty()` in the new `server/partLedger.js`, which runs the same UPDATE the old inline SQL did and appends a row to the new append-only `part_qty_ledger` table in the same transaction. Each row records the job, printer (with a name snapshot that survives renames and deletes), G-code, the change actually applied, the running total after it, a source (`print_finished`, `operator_confirm`, `operator_adjust`, `marked_failed`, `manual_edit`), and a readable note such as "Operator confirmed 24 of 25 good (Set Ready)".
+
+Part-count behavior is mechanically preserved: same amounts, same conditions, same zero clamps, same part/project close and reopen logic. The ledger never credits anything on its own; it only records changes made by the existing events, so it cannot introduce a phantom credit and inherits their restart, reconnect, and poll-flap protection. New tests assert that a repeated FINISHED poll, a restart with a printer still latched on FINISHED, and a stale failed job from a previous session each write no ledger row. A new guard test scans the server source and fails if any file other than `partLedger.js` writes `completed_qty` directly; run against the previous code it flags all eight original call sites. The set-ready branches live inside `server/index.js` and are covered by that guard plus the helper tests, not by an end-to-end route test.
+
+Existing installs get a one-time history rebuild on the first start after upgrading: each finished job (including legacy `done` jobs) becomes a `rebuilt_job` row at its finish time, and when those do not add up to the current count (the old schema never stored operator count corrections or manual edits) one clearly labelled `baseline` row covers the difference. The rebuild never changes `completed_qty`. `node server/scripts/audit-dry-run.js` runs it against a snapshot of the live DB taken with SQLite's online backup API, so it can be checked on real farm data before deploying; `--check` is a read-only reconciliation of the live ledger afterwards.
+
+Verified against the demo seed and a real server start in `DEMO_MODE`: 16 job rows and 5 baseline rows rebuilt, zero mismatches, a second start rebuilds nothing. On 2026-09-30 Joel switched the production farm machine to this branch and verified the audit trail there (dry run against a live snapshot, the one-time rebuild on restart, the audit pages, and the `--check` reconciliation) before it was merged.
+
+Found while building this, not fixed here: mark-job-failure deducts the job's full `parts_per_plate` even when the operator already corrected that plate's count. Reproduced on a part at 10 whose last plate held 4: complete-and-decommission with 3 of 4 good takes it to 9, then mark-job-failure on the same job deducts 4 (to 5) instead of the 3 that were actually credited (to 6), leaving the count one part too low. The new ledger shows it directly as `operator_adjust -1` followed by `marked_failed -4`. Left for a separate change because it alters part-count behavior.
+
+### Changes
+- `server/partLedger.js` (new): `part_qty_ledger` schema, `adjustPartQty()`, `deleteForPart()`, and `rebuildMissingLedgers()`.
+- `server/db.js`: creates the ledger table and runs the rebuild for parts with no ledger rows on startup.
+- `server/scheduler.js`: `_handleFinished` credits through `adjustPartQty` (`print_finished`, with a note when recovering a job marked failed after a connection drop this session).
+- `server/index.js`: all three crediting branches of set-ready go through `adjustPartQty` (`operator_adjust` for a corrected count, `operator_confirm` for missed finish, connection-drop recovery, stopped on printer, and stalled upload).
+- `server/routes/printers.js`: complete-and-decommission and mark-job-failure go through `adjustPartQty`.
+- `server/routes/parts.js`: `PUT /api/parts/:id` records a `manual_edit` row only when `completed_qty` actually changes; part delete removes the part's ledger rows.
+- `server/routes/projects.js`: draft project delete removes each part's ledger rows.
+- `server/routes/backup.js`: export includes `part_qty_ledger`; restore clears it, restores backed-up rows, rebuilds parts from older backups, syncs its autoincrement, and reports the row count.
+- `server/seed-demo.js`: clears the ledger so the next start rebuilds it from the seeded jobs.
+- `server/scripts/audit-dry-run.js` (new): snapshot dry run, `--check` reconciliation, `--part` timeline.
+- `server/tests/part-ledger.test.js` (new), `server/tests/part-ledger-guard.test.js` (new); ledger cases added to `scheduler-finished.test.js`, `printers-decommission.test.js`, and `backup-restore.test.js`.
+- `docs/database.md`: `part_qty_ledger` table, sources, invariant, rebuild, and dry-run script. `docs/api.md`: backup export/restore include the ledger. `docs/README.md`: project map.
+
+---
+
 ## 2026-09-19: server tests no longer touch real data, and a server startup smoke test
 
 Two related gaps, one root cause. First, the server test suite was not isolated from real data: `server/events.js` opens the real database (`server/data/farm.db`) merely by being required, independent of the in-memory database each route test builds, so any test that triggered an event inserted it into whatever `farm.db` existed, using the test's printer ids. On a machine with real printers, `npm test` therefore attached fake events ("Job Failed", "decommission", "Material: (none) to PLA") to real printers with matching ids, and events are never deleted by design. The upload tests also left fixture files in the real `server/gcode` folder. It surfaced when a real printer's history in the dev environment contained "Job 2, part: Test Part" entries; measured on empty directories, one run of the suite created a real `farm.db` with 44 orphan events and left 6 files, and the accumulated dev volume held about 3,000 events for a single printer and 650 files for 11 G-code rows. Second, nothing tested `server/index.js` itself (startup, static files, the SPA fallback, the inline operator endpoints), because route tests mount routers on a throwaway app. The Express 5 review found a real behavior difference there by hand.
@@ -370,6 +581,9 @@ Delete is now a deliberate, guarded action: only reachable for an already-decomm
 - `docs/driver-authoring.md`: added `dropConnection(printerId)` to the documented optional driver exports.
 - `server/tests/printers-delete.test.js` (new): covers 404, both 409 guards, cascading job deletion, connection-cache cleanup, and that other printers/jobs are untouched.
 - `server/tests/printers-connection-cleanup.test.js` (new): regression test for issue #45, asserting all four decommission code paths drop the driver connection cache.
+
+---
+
 ## 2026-09-01: printerIdle bypass let dispatch exceed dispatch_batch_size
 
 Joel batch-confirmed a stack of held printers via Set Ready (N) with `dispatch_batch_size` set to 5, then individually confirmed roughly ten more printers that had shown a false failed-upload hold (the upload attempt was reported failed on our side, but the printer had actually completed the print). Fleet's uploading count briefly showed 7 concurrent uploads against the configured limit of 5.
@@ -387,6 +601,51 @@ Scheduler-only change: no candidate-selection SQL, ceiling math, or `completed_q
 - `docs/poller.md`: noted that the `printerIdle` listener routes through `scheduleForPrinter` and defers behind an in-progress batch sweep.
 
 ---
+## 2026-07-31: Schedule page, a forward projection of what each printer runs next
+
+The Jobs page only ever answered "what happened". Planning a shift needed the opposite view: when does this printer free up, when does this project finish, and what is the farm going to do overnight. The new Schedule page (nav entry directly under Jobs) draws one column per active printer against an Outlook-style time axis, with each print as a coloured block whose height is its anticipated duration.
+
+It is a projection, not a queue. `server/projection.js` is strictly read-only: no job rows, no dispatch, and `parts.completed_qty` is never touched. It replays the scheduler's own selection rules forward against a simulated clock, and to guarantee it cannot disagree with real dispatch, the eligibility predicate and priority ordering moved into `server/candidate-query.js`, which the scheduler and the projection both build their SQL from. Each keeps its own SELECT list, so the scheduler's query text is unchanged and adding a column for the schedule cannot widen it.
+
+**Two farm-policy rules make the projection realistic** rather than lights-out fiction, since every print finishes held for sign-off: a 15-minute changeover between prints on the same printer (swap the plate, confirm the result), and staffed hours of 06:00 to 22:00 local, where a print finishing after 22:00 waits for 06:00 before its changeover. So a print ending at 21:50 is followed by a start at 22:05, and one ending at 23:10 by a start at 06:15. The overnight gaps are shaded on the page, and the values are reported in the payload's `assumptions` so the UI states them instead of presenting the schedule as fact.
+
+**Busy comes from the jobs table, not `printers.status`.** This was a specific complaint: a printer that was just handed a job keeps showing FINISHED for several seconds, because `printers.status` only updates on the next 15 s poll. A job row is written synchronously at reservation, so the projection reads that instead and a just-dispatched printer is busy immediately. Live `job_time_remaining` is preferred for the print actually running. The inverse case is handled too: a job row still saying `printing` while the printer reports FINISHED/IDLE/STOPPED means the plate is off the nozzle and is waiting on a person, so the block ends now rather than running on to an estimate the farm has already outlived. That check is gated on a 90 s window matching the scheduler's `STALE_JOB_GRACE_MS`, because inside it the same shape is simply a fresh dispatch the poller has not caught up with, and collapsing that block would free the lane and project a phantom second job onto a busy printer. Found by running the projection against seeded demo data, where a held printer's finished print was drawn an hour into the future.
+
+**Ties are broken at random, as asked, but not jitterily.** When several printers come free within 60 s of each other and more than one can take the highest-priority part, the winner is a uniform random pick among them, seeded from the schedule fingerprint. An unchanged farm therefore re-renders an identical schedule instead of shuffling blocks on every poll, and any real change reshuffles the tie.
+
+**Block length needs an estimate, so Add Part grew an optional one.** `parts.print_time_seconds` (an existing column, unused since estimates moved per-G-code) is written again as the part-level fallback, via `print_time` on `POST`/`PUT /api/parts`. Precedence is `gcodes.est_print_secs`, then the part estimate, then two hours flagged `time_unknown` and drawn with a `?` marker, so a default is never mistaken for a measurement.
+
+**Uploads now read the slicer's own numbers.** Rather than relying on the filename convention, `POST /api/gcodes/upload` parses the uploaded file: `Metadata/slice_info.config` in an Orca or Bambu `.3mf` (`prediction` in whole seconds and `weight` in grams, from the plate with `index` 1, which is the plate the Bambu driver prints), or the footer comments in a plain `.gcode` (`; estimated printing time (normal mode) = ...` for PrusaSlicer, `; total estimated time: ...` for Orca/Bambu, `; total filament used [g] = ...` for both). File-derived values override the filename-derived fields the client posts, each field falling back independently. `.bgcode` is deliberately not parsed: Prusa's binary container would need its own block reader plus heatshrink, so the filename value stands. Every field name and unit above was verified against slicer source (OrcaSlicer `bbs_3mf.cpp` / `PartPlate.cpp`, PrusaSlicer `GCodeProcessor.cpp`) and cited in `server/slicer-metadata.js`, not inferred from sample files. Reading `.3mf` entries needed real ZIP extraction, so the central-directory walk added with the unsliced-.3mf check moved into `server/zip-reader.js` and grew local-header seeking plus `zlib.inflateRawSync`; entries are size-capped so a several-hundred-MB plate G-code can never be inflated during an upload.
+
+**Freshness is explicit, which is the other half of the reported complaint.** The schedule is derived state, and the operator needs to tell "current" from "stale". `server/schedule-state.js` hashes the projection's inputs and `GET /api/schedule` returns that fingerprint; the page polls the much cheaper `GET /api/schedule/version` every 5 s and, on a mismatch, shows a "Recalculating schedule" state and refetches instead of leaving old blocks on screen. Editing an estimate on the Projects page also fires a `scheduleDirty` window event so an open Schedule tab reacts immediately. It is a hash of the inputs rather than a counter that mutation sites increment, because a counter needs a bump call at every write that matters and goes silently stale the first time a new write path forgets one; hashing cannot forget. `printers.job_progress` and `job_time_remaining` are excluded on purpose, since every poll rewrites them for every printing printer and including them would pin the UI in a permanent recalculating state, which is the same lie as stale data wearing a spinner. The 15 s full refresh stays, because live progress moves an in-progress block's leading edge without changing the fingerprint.
+
+No change to dispatch behaviour, hold semantics, or any path that credits quantity. Not yet exercised on the production farm: verified by the test suite and by running the server against seeded demo data.
+
+### Changes
+- `server/projection.js` (new): read-only forward projection. Availability from the jobs table, changeover and staffed-hours model, estimate precedence with a flagged two-hour default, per-part ceiling accounting mirroring `_reserveJob`, seeded random tie-break, horizon with `truncated` reporting and `MAX_PROJECTED_BLOCKS`/`MAX_ITERATIONS` rails.
+- `server/candidate-query.js` (new): the dispatch eligibility predicate and priority ordering, shared by the scheduler and the projection; `SCHEDULER_COLUMNS` is byte-identical to the previously inline list.
+- `server/scheduler.js`: `_reserveJob` builds its candidate query from `candidateSql(SCHEDULER_COLUMNS, ...)`; same SQL, same bind order, no behaviour change.
+- `server/schedule-state.js` (new): `fingerprint(db)` over printers, active projects and their parts and G-codes, and in-flight jobs; excludes live poll progress.
+- `server/routes/schedule.js` (new): `GET /api/schedule` (`?horizon_hours=`, 400 outside 1 to 168) and `GET /api/schedule/version`.
+- `server/index.js`: mounts `/api/schedule`.
+- `server/zip-reader.js` (new): central-directory walk (moved from `routes/gcodes.js`), local-header seeking, stored and deflate entry reads via `zlib`, `MAX_ENTRY_BYTES` cap.
+- `server/slicer-metadata.js` (new): `.3mf` `slice_info.config` and `.gcode` comment parsing with source citations; returns null rather than guessing.
+- `server/estimate-input.js` (new): `normalizePrintTime` / `normalizeMaterialGrams`, moved out of `routes/gcodes.js` so the parts routes parse operator-typed estimates identically.
+- `server/routes/gcodes.js`: uses the shared ZIP reader and input parsers; upload reads estimates from the file and prefers them over the posted filename-derived values.
+- `server/routes/parts.js`: optional `print_time` on POST and PUT (present-wins, `""` clears, 400 with a format hint, 400 on zero or less), written to `print_time_seconds`.
+- `client/src/pages/Schedule.jsx` (new): the page itself. Sticky headings and time gutter, server-clock now-line, per-project block colours, clipped-block marker, off-hours shading, unavailable-lane hatching, horizon and zoom controls, recalculating state, unscheduled-demand list.
+- `client/src/scheduleDirty.js` (new): `scheduleDirty` event name and `signalScheduleDirty()`.
+- `client/src/App.jsx`: Schedule nav entry (directly under Jobs) and `/schedule` route.
+- `client/src/pages/Projects.jsx`: Est. print time on the Add Part form and in each part's details panel; inline error for a rejected estimate; fires `signalScheduleDirty()` on estimate saves, part adds, quantity edits, and G-code upload/delete.
+- `server/tests/schedule-projection.test.js` (new, 34 tests): clock model, estimate precedence, block placement, the stale-FINISHED and fresh-dispatch cases, availability states, ceiling and priority, tie-break stability and randomness, horizon truncation, and a read-only assertion.
+- `server/tests/schedule-route.test.js` (new, 24 tests): payload shape, horizon validation, and the fingerprint's must-change / must-not-change contract.
+- `server/tests/slicer-metadata.test.js` (new, 32 tests): ZIP reads including deflate and the size cap, `slice_info.config` plate selection and junk rejection, both G-code comment dialects, and large-file head and tail scanning.
+- `server/tests/gcodes-slicer-estimates.test.js` (new, 6 tests): file-derived estimates win over posted values, per-field fallback, `.bgcode` untouched.
+- `server/tests/parts-print-time.test.js` (new, 13 tests): accepted formats, optionality, clearing, validation, and that a quantity-only edit does not wipe the estimate.
+- `server/tests/helpers/build-zip.js`: optional deflate compression and a `buildSliceInfoConfig` fixture.
+- `server/tests/*.test.js` (23 files): `print_time_seconds` added to the inline `parts` schema, which the real schema has had since 2026-04.
+- `docs/schedule.md` (new), `docs/README.md`, `docs/api.md`, `docs/web-app.md`, `docs/database.md`: documented the page, both endpoints, the estimate fields, the upload parsing, and the freshness model.
+- `CLAUDE.md`: two new sync pairs (the shared candidate query, and the grace window shared with the scheduler).
 
 ## 2026-07-30: Projects page only shows Active projects by default
 
@@ -410,6 +669,50 @@ Fixed by adding `priority ASC` to the dashboard's active-projects query, matchin
 - `docs/api.md`, `docs/web-app.md`: documented that `active_projects` and the Dashboard's Active Projects panel are ordered by priority, matching the Projects page.
 
 ---
+## 2026-07-24: printer edits now reach the driver without a server restart
+
+Reported from a live two-printer Bambu farm. The operator added a P1S with a mistyped access code, then corrected the code on the Settings page, and the printer stayed OFFLINE anyway: the Bambu driver's cached MQTT client kept retrying auth with the original wrong code, because nothing ever told the driver the row had changed. Connection-relevant edits only took effect after a full server restart. The same gap had a second, sneakier symptom on the same farm: a duplicate printer row that was decommissioned (and could have been deleted) left behind a ghost MQTT client that reconnected forever, and since a Bambu printer accepts a single LAN client, the ghost and the real entry kicked each other offline in a loop that looked like a flaky printer.
+
+Persistent-connection drivers (bambu, elegoo-centauri, elegoo-centauri2) keep a module-level Map of `printer.id` to a live client that auto-reconnects with the credentials it was created with. The fix is a `dropConnection` contract: each persistent driver exports its existing internal drop helper, the registry exposes `dropConnection(type, printerId)` (a no-op for stateless drivers and never force-loads a lazy driver), and the printer routes call it whenever `ip`, `api_key`, `serial_number`, or `type` changes on PUT, and on DELETE and all three decommission paths. The next poll recreates the connection from the current row.
+
+Validated on hardware: reproduced the wrong-access-code symptom on a real P1S, applied the fix, and confirmed the corrected code connected on the next poll with no restart.
+
+### Changes
+- `server/drivers/bambu.js`: export `dropConnection` (already implemented, previously unreachable).
+- `server/drivers/elegoo-centauri.js`, `server/drivers/elegoo-centauri2.js`: export their existing `dropConnection` helpers.
+- `server/drivers/index.js`: registry-level `dropConnection(type, printerId)`; tracks loaded drivers so dropping never triggers a lazy require.
+- `server/routes/printers.js`: PUT drops the cached connection when a connection-relevant field changes (api_key compared against the request body, since it is deliberately excluded from event logging); DELETE, `decommission`, `complete-and-decommission`, and `mark-job-failure` always drop it.
+- `server/tests/bambu-driver.test.js`: 3 new tests (client ended, reconnect uses fresh credentials, no-op for unknown id).
+- `server/tests/printers-connection-drop.test.js`: new suite covering every route path that must (and must not) drop, plus the registry helper's no-op guarantees.
+- `docs/driver-authoring.md`: `dropConnection` added to the optional exports contract.
+- `docs/api.md`: connection-drop behavior noted on PUT and DELETE.
+## 2026-07-24: stuck uploading/printing jobs can be force-cancelled from the Jobs page
+
+Reported from a live two-printer Bambu farm. A dispatch uploaded a file and published the print-start command, but the printer (latched on a previous FINISH state) silently never started it. The job row sat in `printing` forever against a machine that was not printing anything. That zombie row blocked part deletion (parts refuse to delete with an active job) and had no exit: the Jobs page cancel action only accepted `queued` jobs, and the only endpoint that could touch an active job, `mark-job-failure`, decommissions the printer as a side effect. The operator's actual fix was hand-editing the database.
+
+`DELETE /api/jobs/:id` now accepts `?force=true` to cancel an `uploading` or `printing` job. The scope is deliberately tiny: the job row becomes `cancelled` with `finished_at` stamped, and nothing else happens. No `completed_qty` credit (an active job has credited nothing yet), no hold release (holds are resolved through Fleet's Set Ready / Bad Print), no printer contact (a physically running print is stopped at the printer or from Fleet). The Jobs page shows a "Force Cancel" button on uploading/printing rows, with a danger confirm that says exactly that. Rows displaying as "Awaiting Sign-off" keep no cancel button: resolving a held printer by cancelling its job would bypass the operator sign-off flow.
+
+One interaction needed guarding: the scheduler marks a job `printing` after its upload settles. If the operator force-cancelled during the transfer (uploads retry for many seconds), that write would have resurrected the cancelled job. Both post-upload writes (normal completion and the checkIfPrinting recovery path) now update only `WHERE status = 'uploading'` and treat zero changed rows as "leave it cancelled".
+
+### Changes
+- `server/routes/jobs.js`: `force` query param on DELETE; `uploading`/`printing` become cancellable with `finished_at` stamped; the 409 for other statuses hints at force; queued path byte-for-byte unchanged.
+- `server/scheduler.js` (`_executeUpload`): both status-to-printing writes guard on `status = 'uploading'` and return null when the job was cancelled mid-upload; the recovery path no longer holds the printer in that case.
+- `client/src/pages/Jobs.jsx`: "Force Cancel" on uploading/printing rows (hidden for Awaiting Sign-off), distinct danger confirm, error toast on failed cancels.
+- `server/tests/jobs-cancel.test.js`: new suite covering both modes, part-count and hold invariants, and 409/404 semantics.
+- `server/tests/scheduler-file.test.js`: 2 new tests proving a mid-upload cancel survives both post-upload write paths.
+- `docs/api.md`, `docs/web-app.md`: endpoint and Jobs page behavior documented.
+## 2026-07-24: unsliced .3mf uploads are rejected at upload time
+
+Three prints in one day "didn't run" on a live two-P1S farm: dispatch uploaded the file and published the print-start command, the printer sat at Ready to Print, and the job hung in `printing` forever. The files turned out to be project .3mfs saved without slicing: no `Metadata/plate_1.gcode` inside, which is the exact archive entry the Bambu driver's `project_file` command points at. The printer accepts the upload, finds no G-code to print, and ignores the command with no error anywhere. Nothing in the farm could tell the operator why.
+
+The upload endpoint now inspects `.3mf` files (a `.3mf` is a ZIP; the route walks the central directory with ~30 lines of buffer parsing, no new dependency, nothing extracted) and rejects with a `400` unless `Metadata/plate_1.gcode` is present. Two distinct messages: a file with no plate G-code at all gets "Slice Plate first, then File > Export > Export plate sliced file", and a file whose only sliced plate is not plate 1 gets told to export just that plate. The Projects upload form already renders upload errors inline, so the operator sees the explanation at the moment of upload instead of a silent zombie job an hour later. Non-`.3mf` uploads (Prusa/Klipper `.gcode`/`.bgcode`) are not inspected.
+
+### Changes
+- `server/routes/gcodes.js`: `listZipEntryNames` (EOCD + central directory walk, ZIP64 detected and treated as unparseable) and `validateSliced3mf`; POST /upload rejects invalid `.3mf` files with an instructive `400` and deletes the file from disk, extension check case-insensitive.
+- `server/tests/gcodes-3mf-validation.test.js`: new suite: sliced accepted, unsliced rejected, wrong-plate rejected, non-ZIP rejected, disk cleanup on rejection, non-.3mf uploads unaffected, case-insensitivity.
+- `server/tests/helpers/build-zip.js`: minimal stored-ZIP builder shared by test suites.
+- `server/tests/gcodes.test.js`: `makeTempGcode` now writes a valid sliced archive for `.3mf` names so the ams_slot tests pass the new validation.
+- `docs/api.md`, `docs/web-app.md`: validation documented on the upload endpoint and the Projects upload form.
 
 ## 2026-07-26: fix AMS slot picker showing 0-indexed slot numbers (issue #38)
 

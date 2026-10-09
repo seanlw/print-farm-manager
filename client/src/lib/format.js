@@ -42,6 +42,30 @@ export function formatTimestamp(ms, formattingLocale) {
   return formatDateTime(ms, formattingLocale);
 }
 
+// Schedule page clock time, hours and minutes only (block tooltips and the "now" line).
+export function formatHourMinute(ms, formattingLocale) {
+  return new Date(ms).toLocaleTimeString(formattingLocale, { hour: '2-digit', minute: '2-digit' });
+}
+
+// Schedule page time-axis label. Marks the date only at midnight, so a multi-day horizon
+// stays readable; every other hour shows just the hour.
+export function formatScheduleHourLabel(ms, formattingLocale) {
+  const d = new Date(ms);
+  if (d.getHours() === 0) return d.toLocaleDateString(formattingLocale, { month: 'short', day: 'numeric' });
+  return d.toLocaleTimeString(formattingLocale, { hour: 'numeric' });
+}
+
+// Part audit page timestamp. Leaves the year off for the current year, so a long
+// timeline stays compact; `now` is injectable for tests.
+export function formatAuditTimestamp(ms, formattingLocale, now = Date.now()) {
+  if (!ms) return EMPTY_PLACEHOLDER;
+  const d = new Date(ms);
+  return d.toLocaleString(formattingLocale, {
+    year: d.getFullYear() === new Date(now).getFullYear() ? undefined : 'numeric',
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
 // ── Durations ────────────────────────────────────────────────────────────────
 
 // Dashboard project elapsed time. Input is seconds. Rolls up to weeks or days for long runs.
@@ -61,6 +85,16 @@ export function formatDurationSecs(secs, t) {
   }
   const h = Math.floor(secs / HOUR);
   const m = Math.floor((secs % HOUR) / MINUTE);
+  if (h > 0) return m > 0 ? t('common.durationHoursMinutes', { h, m }) : t('common.durationHours', { h });
+  return t('common.durationMinutes', { m });
+}
+
+// Schedule page block length. Input is seconds. Hours and minutes, with minutes rounded
+// to the nearest whole minute (a 59.5 minute remainder rolls over into the next hour).
+export function formatBlockDuration(secs, t) {
+  const totalMin = Math.round((secs || 0) / 60);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
   if (h > 0) return m > 0 ? t('common.durationHoursMinutes', { h, m }) : t('common.durationHours', { h });
   return t('common.durationMinutes', { m });
 }

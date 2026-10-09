@@ -1,6 +1,6 @@
 # CLAUDE.md: Print Farm Manager Operating Manual
 
-Print Farm Manager runs a real fleet of 50+ printers (Prusa, Bambu, Elegoo, Klipper, OctoPrint) and has been public open source since v1.0.0 (github.com/joeltelling/print-farm-manager). This checkout is the seanlw/print-farm-manager fork; the upstream repository has stopped receiving commits (as of 2026-09), so this fork carries its own CI, Dependabot config, and dependency updates. Two consequences shape every decision:
+Print Farm Manager runs a real fleet of 50+ printers (Prusa, Bambu, Elegoo, Klipper, OctoPrint) and has been public open source since v1.0.0 (github.com/joeltelling/print-farm-manager). This checkout is the seanlw/print-farm-manager fork. It carries its own CI, Dependabot config, and dependency updates, and merges upstream changes by hand (see "Merging upstream" below). Two consequences shape every decision:
 
 1. Correctness bugs land on physical hardware. A bad dispatch or a double-credited part count wastes plastic, printer hours, and operator trust.
 2. Docs are a product surface. Strangers self-install from README.md and docs/installation.md, and community contributors build drivers from docs/driver-authoring.md.
@@ -82,7 +82,8 @@ If you touch one side of a pair, grep for and update the other in the same commi
 
 | If you change | You must also check |
 |---|---|
-| Scheduler candidate/eligibility SQL (scheduler.js) | `GET /api/parts/:id/dispatch-status` in routes/parts.js, which mirrors it for operator diagnostics |
+| Scheduler candidate/eligibility SQL (server/candidate-query.js) | `GET /api/parts/:id/dispatch-status` in routes/parts.js, which mirrors it in JS for operator diagnostics (`diagnosePart`, also used by `GET /api/parts/queue`, which additionally copies the candidate ORDER BY). The scheduler and server/projection.js both build their SQL from candidate-query.js, so those two cannot drift; the JS mirror still can |
+| `STALE_JOB_GRACE_MS` (scheduler.js) | `FRESH_DISPATCH_GRACE_MS` (server/projection.js): same 90 s "freshly dispatched, not stale" line, drawn for the same reason on both the dispatch and the projection side |
 | Any new table or column | server/routes/backup.js export AND restore (column lists derive from the live schema; keep it that way), plus server/tests/backup-restore.test.js seeding and asserting it |
 | Driver registry (drivers/index.js) | routes/models.js VALID_CONNECTORS, routes/printers.js NO_API_KEY_TYPES, and every brand touchpoint in client/src/pages/Settings.jsx (find them with `grep -rn "octoprint" client/src`) |
 | A route's request/response shape | docs/api.md entry and the route's test file |
@@ -183,6 +184,16 @@ Default philosophy when torn between inferring and asking the operator (in produ
 - Security updates are separate from that schedule and still open promptly.
 - Reviewing a Dependabot PR: green CI is necessary, not sufficient (see "The blind dependency bump"). Read the changelog for majors, check the sync pairs table for the Node pin, and browser-check client-side or build-tool bumps before merging.
 - When a PR conflicts after another merge (usually `package-lock.json`), comment `@dependabot rebase` on it.
+
+## Merging upstream
+
+Upstream (`upstream` remote, joeltelling/print-farm-manager) is merged into a branch, never straight into main, then tested like any other change. Fork-only conventions that upstream code does not follow, and that each merge has to restore:
+
+- **i18n:** upstream has none. Every UI string an upstream commit adds (new pages included) moves into `client/src/locales/en.json` and renders through `t()`, and any formatter it copies into a page moves to `client/src/lib/format.js` with a test.
+- **paths.js:** upstream builds `GCODE_DIR` and data paths from `__dirname`. Replace those with `require('./paths')` / `require('../paths')`, in tests too.
+- **Inline test schemas:** upstream's new test files do not know the fork-only columns (`printers.spoolman_spool_id`, `printers.spoolman_report_usage`, `gcodes.file_size`, the `filament_used_*` columns). Add them or the routes 500.
+- **Smoke test:** a new upstream route or page needs its `PAGES` entry and `baseRoutes()` fixtures (see the sync pairs above).
+- **CHANGELOG.md** uses the union merge driver, so upstream entries land in the middle of the file. Move them to the top and delete any stray duplicated heading.
 
 ## Skills
 

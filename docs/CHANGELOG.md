@@ -2,6 +2,14 @@
 
 ---
 
+## 2026-10-10: Dashboard "Awaiting" status label in title case
+
+The Dashboard's fleet status chips read "3 Printing", "2 Idle", "1 Error", and then "1 AWAITING" in capitals, and a held printer's cell tooltip read "MK4S_04: AWAITING" next to "MK4S_01: Printing". Before translation support the page printed raw status codes, so every chip was in capitals; the i18n change (2026-07-06) switched the others to the title-case status labels and kept this one as a literal "AWAITING". Noticed while retaking the README screenshots.
+
+### Changes
+- `client/src/locales/en.json`: `common.statusAwaitingShort` is "Awaiting".
+- `client/tests/en-json.test.js`: the `common.status*` labels must not be all capitals.
+
 ## 2026-10-10: duplicated projects no longer share a copied G-code file
 
 Found while testing the October Dependabot merges: `server/tests/projects-duplicate.test.js` failed about one run in five. Duplicating a project copies each G-code file to a new name built from the current time in milliseconds and the source G-code id. Two duplicates of the same project made in the same millisecond therefore got the same name: the second copy overwrote the first, and both new G-code rows pointed at one file, so deleting either copy's G-code would remove the file the other one prints from. On a real farm this needs two duplicate requests in the same millisecond, so it was mostly a random CI failure, but the shared file is a real data hazard. The copied file name now also includes the new project's id, which is unique per duplicate.

@@ -244,7 +244,10 @@ module.exports = (db, scheduler = null) => {
         for (const gcode of gcodes) {
           const srcBasename = gcode.filepath.split(/[\\/]/).pop();
           const srcPath     = path.join(GCODE_DIR, srcBasename);
-          const newBasename = `${now}_dup${gcode.id}_${gcode.filename}`;
+          // The new project id keeps two duplicates made in the same millisecond
+          // from writing the same file (the second copy would overwrite the first
+          // and both gcode rows would point at one file).
+          const newBasename = `${now}_p${newProject.id}_dup${gcode.id}_${gcode.filename}`;
           let   newFilepath = newBasename;
 
           if (fs.existsSync(srcPath)) {

@@ -2,6 +2,14 @@
 
 ---
 
+## 2026-10-10: duplicated projects no longer share a copied G-code file
+
+Found while testing the October Dependabot merges: `server/tests/projects-duplicate.test.js` failed about one run in five. Duplicating a project copies each G-code file to a new name built from the current time in milliseconds and the source G-code id. Two duplicates of the same project made in the same millisecond therefore got the same name: the second copy overwrote the first, and both new G-code rows pointed at one file, so deleting either copy's G-code would remove the file the other one prints from. On a real farm this needs two duplicate requests in the same millisecond, so it was mostly a random CI failure, but the shared file is a real data hazard. The copied file name now also includes the new project's id, which is unique per duplicate.
+
+### Changes
+- `server/routes/projects.js`: `POST /api/projects/:id/duplicate` names copied G-code files `<time>_p<new project id>_dup<gcode id>_<filename>`.
+- `server/tests/projects-duplicate.test.js`: the "two duplicates" test pins `Date.now()` so both duplicates land in the same millisecond every run, and checks that both copied files exist.
+
 ## 2026-10-09: merge upstream (part audit ledger, confirmed-count fix, Print Queue, Schedule, driver connection drops)
 
 Merged the five upstream commits since the last sync (upstream #79, #80, #81, #83, #84). Their own entries follow below, dated as upstream dated them. What upstream brings: every `completed_qty` change now goes through `server/partLedger.js` and is recorded in a new `part_qty_ledger` table, with a part audit page behind it; repeating a confirmed good count no longer applies it twice; a read-only Schedule page and a Print Queue page under Fleet; persistent driver connections dropped on printer edits as well as deletes and decommissions; force-cancel for stuck jobs; unsliced `.3mf` uploads rejected; print time and weight read from the uploaded file. The axios bump (#84) was already on the fork.

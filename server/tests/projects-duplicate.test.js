@@ -534,8 +534,16 @@ describe('POST /api/projects/:id/duplicate — edge cases', () => {
     touchGcode(base);
     seedGcode(pId, base, { filepath: base });
 
-    const r1 = await request(app).post(`/api/projects/${projId}/duplicate`).send({ name: 'Copy 1' });
-    const r2 = await request(app).post(`/api/projects/${projId}/duplicate`).send({ name: 'Copy 2' });
+    // Pin the clock so both duplicates land in the same millisecond, the case
+    // that used to give them the same copied filename.
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(1791630678684);
+    let r1, r2;
+    try {
+      r1 = await request(app).post(`/api/projects/${projId}/duplicate`).send({ name: 'Copy 1' });
+      r2 = await request(app).post(`/api/projects/${projId}/duplicate`).send({ name: 'Copy 2' });
+    } finally {
+      nowSpy.mockRestore();
+    }
 
     const partId1 = db.prepare('SELECT id FROM parts WHERE project_id = ?').get(r1.body.project.id).id;
     const partId2 = db.prepare('SELECT id FROM parts WHERE project_id = ?').get(r2.body.project.id).id;
@@ -544,6 +552,8 @@ describe('POST /api/projects/:id/duplicate — edge cases', () => {
 
     expect(gc1.id).not.toBe(gc2.id);
     expect(gc1.filepath).not.toBe(gc2.filepath);
+    expect(fs.existsSync(path.join(GCODE_DIR, gc1.filepath))).toBe(true);
+    expect(fs.existsSync(path.join(GCODE_DIR, gc2.filepath))).toBe(true);
 
     createdFiles.push(path.join(GCODE_DIR, gc1.filepath));
     createdFiles.push(path.join(GCODE_DIR, gc2.filepath));

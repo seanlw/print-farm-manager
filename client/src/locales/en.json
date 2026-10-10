@@ -29,7 +29,7 @@
     "statusOffline": "Offline",
     "statusUnknown": "Unknown",
     "statusDecommissioned": "Decommissioned",
-    "statusAwaitingShort": "AWAITING",
+    "statusAwaitingShort": "Awaiting",
     "durationWeeksDays": "{{w}}wk {{d}}d",
     "durationWeeks": "{{w}}wk",
     "durationDaysHours": "{{d}}d {{h}}h",

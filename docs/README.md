@@ -15,7 +15,7 @@ npm run dev
 - API: `http://localhost:3000`
 - UI: `http://localhost:5173`
 
-Prefer Docker over a local Node.js install? `docker compose up --build print-farm-manager-dev` runs the same workflow in a container, see the [README](../README.md#quick-start-development). Run the tests with `npm test`, or `docker compose run --rm print-farm-manager-dev npm test`. Set `DEMO_MODE=true` to skip real printer polling while developing.
+Prefer Docker over a local Node.js install? `docker compose up --build print-farm-manager-dev` runs the same workflow in a container, see the [README](../README.md#quick-start-development). Run the tests with `npm test`, or `docker compose run --rm print-farm-manager-dev npm test`. Set `DEMO_MODE=true` to skip real printer polling and dispatch while developing.
 
 ## Documentation Index
 

@@ -2,6 +2,14 @@
 
 ---
 
+## 2026-10-10: Dashboard "Awaiting" status label in title case
+
+The Dashboard's fleet status chips read "3 Printing", "2 Idle", "1 Error", and then "1 AWAITING" in capitals, and a held printer's cell tooltip read "MK4S_04: AWAITING" next to "MK4S_01: Printing". Before translation support the page printed raw status codes, so every chip was in capitals; the i18n change (2026-07-06) switched the others to the title-case status labels and kept this one as a literal "AWAITING". Noticed while retaking the README screenshots.
+
+### Changes
+- `client/src/locales/en.json`: `common.statusAwaitingShort` is "Awaiting".
+- `client/tests/en-json.test.js`: the `common.status*` labels must not be all capitals.
+
 ## 2026-10-10: DEMO_MODE no longer dispatches jobs to printers
 
 `DEMO_MODE=true` is documented as the way to run the server without contacting printers, and CLAUDE.md tells developers to use it with a dev database restored from real farm data. It only stopped the poller, though. The scheduler still ran its startup sweep against the stored statuses, picked every IDLE printer with a matching open part, created job rows, and uploaded G-code to the printer IPs in the database. Found while retaking the README screenshots on a seeded demo database: the sweep tried to upload to `192.168.1.105` and `192.168.1.106` (refused, nothing listening). Against a database restored from a real farm, the same sweep could have started real prints.

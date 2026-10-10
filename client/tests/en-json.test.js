@@ -33,6 +33,15 @@ describe('client/src/locales/en.json', () => {
     expect(dashed).toEqual([]);
   });
 
+  // The Dashboard puts these side by side in its status chips and cell tooltips
+  // ("3 Printing", "1 Awaiting", "2 Idle"), so one in capitals stands out.
+  it('writes the common status labels in title case, not all capitals', () => {
+    const shouted = all
+      .filter(([k, v]) => /^common\.status/.test(k) && /[A-Z]{2}/.test(v) && v === v.toUpperCase())
+      .map(([k]) => k);
+    expect(shouted).toEqual([]);
+  });
+
   it('has balanced Trans component tags in every value', () => {
     const unbalanced = all
       .filter(([, v]) => typeof v === 'string')

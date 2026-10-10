@@ -9,6 +9,16 @@ The Dashboard's fleet status chips read "3 Printing", "2 Idle", "1 Error", and t
 ### Changes
 - `client/src/locales/en.json`: `common.statusAwaitingShort` is "Awaiting".
 - `client/tests/en-json.test.js`: the `common.status*` labels must not be all capitals.
+## 2026-10-10: DEMO_MODE no longer dispatches jobs to printers
+
+`DEMO_MODE=true` is documented as the way to run the server without contacting printers, and CLAUDE.md tells developers to use it with a dev database restored from real farm data. It only stopped the poller, though. The scheduler still ran its startup sweep against the stored statuses, picked every IDLE printer with a matching open part, created job rows, and uploaded G-code to the printer IPs in the database. Found while retaking the README screenshots on a seeded demo database: the sweep tried to upload to `192.168.1.105` and `192.168.1.106` (refused, nothing listening). Against a database restored from a real farm, the same sweep could have started real prints.
+
+`_reserveJob`, which every dispatch path calls before it creates a job row or touches a driver, now returns nothing when `DEMO_MODE=true`. In demo mode the UI still works and seeded statuses hold, but no job rows are created and nothing is uploaded. Part counts are unaffected: no credit path changed. The operator-clicked raw-status debug button on the Printers page still contacts the printer, since an operator asks for it explicitly.
+
+### Changes
+- `server/scheduler.js`: `_reserveJob` skips dispatch when `DEMO_MODE=true`.
+- `server/tests/scheduler-sweep.test.js`: a sweep, `scheduleForPrinter` and `_dispatchToPrinter` in demo mode create no job and never call the driver; the same database dispatches once the variable is unset.
+- `docs/server.md`, `docs/README.md`, `docs/driver-authoring.md`, `CLAUDE.md`: `DEMO_MODE` described as skipping polling and dispatch.
 
 ## 2026-10-10: duplicated projects no longer share a copied G-code file
 

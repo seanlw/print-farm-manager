@@ -600,4 +600,53 @@ describe('_sweepInBatches: ceiling interaction through the real wave loop', () =
     expect(p1.is_held).toBe(0);
     expect(p4.is_held).toBe(0);
   });
+
+  // A demo database seeded (or restored from a real farm) with IDLE printers and an
+  // open part used to dispatch on the startup sweep, uploading to the stored IPs.
+  test('DEMO_MODE=true: the sweep reserves no job and never calls the driver', async () => {
+    const db = makeDb();
+    const now = Date.now();
+    db.prepare("INSERT INTO settings (key, value) VALUES ('dispatch_batch_size', '10')").run();
+
+    const filename = `demo_mode_${now}.bgcode`;
+    const filePath = path.join(GCODE_DIR, filename);
+    fs.writeFileSync(filePath, 'fake gcode');
+    filesToClean.push(filePath);
+
+    db.prepare(`INSERT INTO projects (name, status, priority, created_at, updated_at)
+                VALUES ('Proj', 'active', 0, ?, ?)`).run(now, now);
+    db.prepare(`INSERT INTO parts (project_id, name, target_qty, completed_qty, status, sort_order, created_at, updated_at)
+                VALUES (1, 'Part A', 4, 0, 'open', 0, ?, ?)`).run(now, now);
+    db.prepare(`INSERT INTO gcodes (part_id, printer_model, filename, filepath, parts_per_plate, created_at)
+                VALUES (1, 'mk4s', ?, ?, 1, ?)`).run(filename, filename, now);
+    const { lastInsertRowid } = db.prepare(`
+      INSERT INTO printers (name, ip, api_key, model, type, status, is_held, is_active, created_at)
+      VALUES ('P1', '192.168.1.105', 'key', 'mk4s', 'prusa', 'IDLE', 0, 1, ?)
+    `).run(now);
+    const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(lastInsertRowid);
+
+    const scheduler = new JobScheduler(db, { on: () => {} });
+    scheduler._waitForBatch = jest.fn().mockResolvedValue();
+
+    const prev = process.env.DEMO_MODE;
+    process.env.DEMO_MODE = 'true';
+    try {
+      await scheduler._sweepInBatches([printer]);
+      scheduler.scheduleForPrinter(printer);
+      await scheduler._dispatchToPrinter(printer);
+    } finally {
+      if (prev === undefined) delete process.env.DEMO_MODE;
+      else process.env.DEMO_MODE = prev;
+    }
+
+    expect(db.prepare('SELECT COUNT(*) AS n FROM jobs').get().n).toBe(0);
+    expect(mockDriver.uploadAndPrint).not.toHaveBeenCalled();
+    expect(mockDriver.checkIfPrinting).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT is_held FROM printers WHERE id = ?').get(printer.id).is_held).toBe(0);
+
+    // Same database with DEMO_MODE unset dispatches, so the zero above is the guard.
+    await scheduler._dispatchToPrinter(printer);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM jobs').get().n).toBe(1);
+    expect(mockDriver.uploadAndPrint).toHaveBeenCalledTimes(1);
+  });
 });

@@ -201,7 +201,7 @@ Automated tests with mocked networks catch mapping bugs; they cannot catch a pro
 
 - `npm run dev` runs the server and client with no printers configured. Add your printer via Settings once your driver is registered.
 - A printer row pointing at an unreachable IP exercises your OFFLINE path every 15 seconds.
-- `DEMO_MODE=true` disables polling entirely if you need the UI without driver noise.
+- `DEMO_MODE=true` disables polling and dispatch entirely if you need the UI without driver noise.
 - The poll loop logs every status transition (`[poller] Name: OLD → NEW`), which is usually all you need to watch while validating mappings. Add temporary logging of raw native states inside your driver while classifying them.
 
 ---

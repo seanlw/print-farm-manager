@@ -2,6 +2,17 @@
 
 ---
 
+## 2026-10-10: DEMO_MODE no longer dispatches jobs to printers
+
+`DEMO_MODE=true` is documented as the way to run the server without contacting printers, and CLAUDE.md tells developers to use it with a dev database restored from real farm data. It only stopped the poller, though. The scheduler still ran its startup sweep against the stored statuses, picked every IDLE printer with a matching open part, created job rows, and uploaded G-code to the printer IPs in the database. Found while retaking the README screenshots on a seeded demo database: the sweep tried to upload to `192.168.1.105` and `192.168.1.106` (refused, nothing listening). Against a database restored from a real farm, the same sweep could have started real prints.
+
+`_reserveJob`, which every dispatch path calls before it creates a job row or touches a driver, now returns nothing when `DEMO_MODE=true`. In demo mode the UI still works and seeded statuses hold, but no job rows are created and nothing is uploaded. Part counts are unaffected: no credit path changed. The operator-clicked raw-status debug button on the Printers page still contacts the printer, since an operator asks for it explicitly.
+
+### Changes
+- `server/scheduler.js`: `_reserveJob` skips dispatch when `DEMO_MODE=true`.
+- `server/tests/scheduler-sweep.test.js`: a sweep, `scheduleForPrinter` and `_dispatchToPrinter` in demo mode create no job and never call the driver; the same database dispatches once the variable is unset.
+- `docs/server.md`, `docs/README.md`, `docs/driver-authoring.md`, `CLAUDE.md`: `DEMO_MODE` described as skipping polling and dispatch.
+
 ## 2026-10-10: duplicated projects no longer share a copied G-code file
 
 Found while testing the October Dependabot merges: `server/tests/projects-duplicate.test.js` failed about one run in five. Duplicating a project copies each G-code file to a new name built from the current time in milliseconds and the source G-code id. Two duplicates of the same project made in the same millisecond therefore got the same name: the second copy overwrote the first, and both new G-code rows pointed at one file, so deleting either copy's G-code would remove the file the other one prints from. On a real farm this needs two duplicate requests in the same millisecond, so it was mostly a random CI failure, but the shared file is a real data hazard. The copied file name now also includes the new project's id, which is unique per duplicate.

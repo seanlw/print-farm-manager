@@ -35,7 +35,7 @@
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `3000` | Express listening port |
-| `DEMO_MODE` | unset | `true` skips real printer polling (use with `server/seed-demo.js`, or any time you do not want the server to contact printers) |
+| `DEMO_MODE` | unset | `true` skips real printer polling and job dispatch, so the server never contacts a printer (use with `server/seed-demo.js`, or with a database restored from a real farm). The UI still works and seeded statuses hold, but nothing is uploaded and no job rows are created |
 | `PFM_DATA_DIR` | `server/data` | Where the database (`farm.db`), the hourly backups and restore uploads live |
 | `PFM_GCODE_DIR` | `server/gcode` | Where uploaded G-code and 3mf files are stored |
 | `PFM_CLIENT_DIST` | `client/dist` | The built React client the server serves |

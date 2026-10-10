@@ -235,6 +235,16 @@ class JobScheduler extends EventEmitter {
   // Returns { jobId, candidate, driver, gcodeFullPath } if a job was created as
   // 'uploading': that INSERT is the dispatch lock; _executeUpload takes it from here.
   _reserveJob(printer) {
+    // Demo mode promises the server never contacts printers. The poller already
+    // skips polling, but stored statuses still say IDLE, so without this a sweep
+    // would upload G-code to whatever IP the row holds (a database restored from
+    // a real farm points at real printers). Every dispatch path reserves here
+    // first, so no job row and no upload exist when this returns null.
+    if (process.env.DEMO_MODE === 'true') {
+      console.log(`[scheduler] ${printer.name}: DEMO_MODE, skipping dispatch`);
+      return null;
+    }
+
     // Re-read is_held and status from DB — the printer object passed in may be stale
     const fresh = this.db.prepare('SELECT is_held, status FROM printers WHERE id = ?').get(printer.id);
     if (!fresh || fresh.is_held) {
